@@ -29,7 +29,7 @@ from PyQt5.QtCore import QSize, QEvent
 from scipy.optimize import fsolve, minimize_scalar
 from scipy import ndimage
 
-# --- Matplotlib внутри окна ---
+# Embed Matplotlib plots inside the PyQt application window.
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.image as mpimg
@@ -44,7 +44,7 @@ from openpyxl.styles import PatternFill, Alignment, Font
 from openpyxl.utils import get_column_letter
 
 
-# --------------------- Глобальный перехватчик исключений --------------------- #
+# Keep unexpected GUI errors visible instead of silently terminating the application.
 def _except_hook(exctype, value, tb):
     import traceback
     msg = "".join(traceback.format_exception(exctype, value, tb))
@@ -59,7 +59,7 @@ sys.excepthook = _except_hook
 
 NOZZLE_EXIT_PRESSURE_MAX_MPA = 0.10856
 
-# ----------------------- Табличные данные ----------------------- #
+# Reference performance data for each supported oxidizer-fuel combination.
 PARA = [
     "Liquid oxygen - Kerosene              ",
     "Liquid oxygen - Liquid hydrogen",
@@ -106,7 +106,7 @@ J_st_list = [None, 3034, 3286, 3057, 3156, 2950, 2990, 3033, 2730, 2482, 2840, 2
 COEF_J_DEFAULT = 0.95
 
 
-# ----------------------- Модель ----------------------- #
+# Core engineering model: computes propellant flow, nozzle geometry, and performance.
 class Model:
     def __init__(self):
         self.idx = 1
@@ -115,7 +115,7 @@ class Model:
         self.k = None
         self.T_st = None
         self.J_st_ud = None
-        # входы
+        # Input parameters.
         self.p_k = None  # МПа
         self.P_calc = None  # Н
         self.P_h = None  # Н
@@ -131,7 +131,7 @@ class Model:
         self.p = 0.0981  # МПа
         self.k1 = None
 
-        # --- геометрия ---
+        # --- Geometry ---
         self.J_pr_ud_st = None
         self.J_r_ud = None
         self.J_h_ud = None
@@ -146,7 +146,7 @@ class Model:
         self.D_a = None
         self.D_k = None
 
-        # для контура
+        # Parameters used to construct the nozzle contour.
         self.a = 5.0
         self.b1 = 5.0
         self.c1 = 0.0
@@ -174,6 +174,7 @@ class Model:
         self.L_du = None
 
     def set_fuel(self, idx: int):
+        # Load the thermodynamic constants associated with the selected propellant pair.
         self.idx = idx
         self.k_m = k_m_list[idx]
         self.R = R_st_list[idx]
@@ -211,6 +212,7 @@ class Model:
         return self.J_8_ud - delta * (p_amb / p_e)
 
     def compute_geometry(self, p_k, P_calc, coefJ, z_k, T_k, p_e, p_h=0.0981, calc_mode="sea_level"):
+        # Convert the design inputs into specific impulse, mass flow, and nozzle dimensions.
         self.p_k, self.P_calc, self.P_h = p_k, P_calc, P_calc
         self.coefJ, self.z_k, self.T_k = coefJ, z_k, T_k
         self.p_e, self.p_h, self.p_a = p_e, p_h, p_e
@@ -307,13 +309,14 @@ class Model:
             'L_g': self.L_g, 'L_ц': self.L_cy, 'L_вх': self.L_vh, 'L_c': self.L_c, 'Lдв': self.L_dv
         }
 
-    # ====== КОНТУР СОПЛА ======
+    # ====== NOZZLE CONTOUR ======
     def take_x_y(self):
+        # Generate the chamber and nozzle contour used by plots and downstream calculations.
         x_head0 = -(self.L_g + self.L_cy + self.L_vh)
         x_cyl0 = -(self.L_cy + self.L_vh)
         x_conv0 = -self.L_vh
 
-        # 1. Головная часть камеры
+        # 1. Chamber head section.
         O0 = np.array([self.R0, 0.0])
         O1 = np.array([self.L_g, self.R_k - self.R1])
 
@@ -338,11 +341,11 @@ class Model:
         x_head_arc1 = x_head0 + O1[0] + self.R1 * np.cos(t1)
         y_head_arc1 = O1[1] + self.R1 * np.sin(t1)
 
-        # 2. Цилиндрический участок камеры
+        # 2. Cylindrical chamber section.
         x_cyl = np.array([x_cyl0, x_conv0])
         y_cyl = np.array([self.R_k, self.R_k])
 
-        # 3. Входной участок к критическому сечению
+        # 3. Converging section leading to the throat.
         d = self.R_k - self.R_kr
 
         O2 = np.array([0.0, d - self.R2])
@@ -369,7 +372,7 @@ class Model:
         x_conv_arc3 = x_conv0 + O3[0] + self.R3 * np.cos(t3)
         y_conv_arc3 = self.R_kr + O3[1] + self.R3 * np.sin(t3)
 
-        # 4. Расширяющаяся часть сопла
+        # 4. Diverging nozzle section.
         B = np.array([
             self.R3 * np.sin(self.alpha1),
             self.R3 * (1 - np.cos(self.alpha1))
@@ -463,14 +466,14 @@ class Model:
         return x_contour, y_contour, X, Y
 
 
-# ------------------ Глобали для funM ------------------ #
+# Shared nozzle-profile arrays consumed by the Mach-number solver.
 a1 = a2 = alpha1 = alpha2 = None
 D_k = D_kr = D_a = R_k = R_kr = R_a = R3 = None
 L_g = L_cy = L_vh = L_c = L_dv = None
 x = None  # массив x вдоль сопла
 
 
-# ------------------ Расчёт M (с прогрессом) ------------------ #
+# Solve the Mach-number distribution along the nozzle and report progress to the UI.
 def funM(y, m=10, progress_cb=None):
     global x, k, R_kr, L_g, L_cy
     if x is None or len(x) != len(y):
@@ -568,7 +571,7 @@ def funM(y, m=10, progress_cb=None):
     return np.asarray(Arr, dtype=float)
 
 
-# ------------------ Полотно для графиков ------------------ #
+# Reusable interactive plotting canvas for performance curves and nozzle geometry.
 class PlotWidget(QWidget):
     def __init__(self, title=""):
         super().__init__()
@@ -584,7 +587,7 @@ class PlotWidget(QWidget):
         self._responsive_margins = False
         self._layout_update_pending = False
 
-        # по умолчанию светлая тема
+        # Use the light theme by default.
         self._theme_mode = "light"
         self.fg_color = "#000000"
         self.bg_color = "#ffffff"
@@ -693,7 +696,7 @@ class PlotWidget(QWidget):
         if self.hover_text_changed is not None:
             self.hover_text_changed(text)
 
-    # --- смена темы для графика ---
+    # --- Plot theme switching ---
     def set_theme(self, mode: str):
         """mode: 'light' | 'dark'"""
         if mode not in ("light", "dark"):
@@ -714,10 +717,10 @@ class PlotWidget(QWidget):
         if self.ax is None:
             return
         self.ax.set_facecolor(self.bg_color)
-        # границы
+        # Plot borders.
         for sp in self.ax.spines.values():
             sp.set_color(self.fg_color)
-        # оси, подписи, заголовок
+        # Axes, labels, and title.
         self.ax.tick_params(colors=self.fg_color)
         self.ax.xaxis.label.set_color(self.fg_color)
         self.ax.yaxis.label.set_color(self.fg_color)
@@ -788,13 +791,13 @@ class PlotWidget(QWidget):
         cax = divider.append_axes("right", size="3%", pad=0.05)
         cb = self.fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), cax=cax)
 
-        # перекрашиваем colorbar под тему
+        # Match the color bar to the active theme.
         cb.outline.set_edgecolor(self.fg_color)
         cb.ax.tick_params(color=self.fg_color)
         for lab in cb.ax.get_yticklabels():
             lab.set_color(self.fg_color)
 
-        # контур сопла
+        # Nozzle contour.
         self.ax.plot(x, y, color=self.fg_color, lw=0.8)
         self.ax.set_aspect("equal", adjustable="box")
         self.ax.set_title(self.title)
@@ -841,7 +844,7 @@ class PlotWidget(QWidget):
         self._apply_line_margins()
         self.canvas.draw_idle()
 
-    # --- единая, исправленная версия draw_geometry ---
+    # --- Consolidated and corrected draw_geometry implementation ---
     def draw_upper_contour(
             self, x_arr, y_arr, points=None, xlabel="x [mm]", ylabel="R [mm]",
             line_label="nozzle contour", points_label="thermal points",
@@ -975,12 +978,12 @@ class PlotWidget(QWidget):
         y_dim1 = -max(y) - 2 * h_text
         y_dim2 = y_dim1 - 2.5 * h_text
 
-        # Диаметры
+        # Diameters.
         draw_v_dim(ax, (x2 + x3) / 2, -y2, y2, "Ø " + str(round(D_k, 2)), loc="center")
         draw_v_dim(ax, x4, -y4, y4, "Ø " + str(round(D_kr, 2)), loc="center")
         draw_v_dim(ax, x5, -y5, y5, "Ø " + str(round(D_a, 2)), loc="left")
 
-        # Частные длины
+        # Individual section lengths.
         draw_h_dim(ax, x1, x2, y1, y2, y_dim1, round(L_g, 2))
         draw_h_dim(ax, x2, x3, y2, y3, y_dim1, round(L_cy, 2))
         draw_h_dim(ax, x3, x4, y3, y4, y_dim1, round(L_vh, 2))
@@ -997,7 +1000,7 @@ class PlotWidget(QWidget):
         self.canvas.draw_idle()
 
 
-# ------------------ Страница графика с кнопкой ------------------ #
+# Common page wrapper that combines a plot, controls, and contextual information.
 class GraphPage(QWidget):
     def __init__(self, title: str, button_text: str, show_info=False):
         super().__init__()
@@ -1020,7 +1023,7 @@ class GraphPage(QWidget):
         self.language = "en"
 
         # =====================================================
-        # Вариант для страницы геометрии: только график + кнопка
+        # Geometry-page layout: plot and action button only.
         # =====================================================
         if not show_info:
             bar = QHBoxLayout()
@@ -1038,7 +1041,7 @@ class GraphPage(QWidget):
             return
 
         # =====================================================
-        # Вариант для страниц M, T, P
+        # Layout used by the Mach, temperature, and pressure pages.
         # =====================================================
         bar = QHBoxLayout()
         bar.setContentsMargins(0, 0, 0, 0)
@@ -1106,7 +1109,8 @@ class GraphPage(QWidget):
             return
 
         if self.plot._hover_x is None or self.plot._hover_val is None:
-            self.points_box.append("Нет данных для поиска." if self.language == "ru" else "No data available for search.")
+            self.points_box.append \
+                ("Нет данных для поиска." if self.language == "ru" else "No data available for search.")
             return
 
         try:
@@ -1152,13 +1156,28 @@ class GraphPage(QWidget):
 
 
 class ThermalPage(QWidget):
+    # Presents thermal-analysis inputs, results, and tabular wall data.
     def __init__(self):
         super().__init__()
         self.setObjectName("graphPage")
 
-        layout = QVBoxLayout(self)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.NoFrame)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        outer_layout.addWidget(self.scroll_area)
+
+        self.scroll_content = QWidget()
+        self.scroll_content.setObjectName("graphPage")
+        self.scroll_area.setWidget(self.scroll_content)
+
+        layout = QVBoxLayout(self.scroll_content)
         layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        layout.setSpacing(16)
 
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
@@ -1252,21 +1271,22 @@ class ThermalPage(QWidget):
 
         self.table = QTextEdit()
         self.table.setReadOnly(True)
-        self.table.setMinimumHeight(180)
+        self.table.setMinimumHeight(280)
+        self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.table.setLineWrapMode(QTextEdit.NoWrap)
-        layout.addWidget(self.table, 2)
+        layout.addWidget(self.table)
 
         self.plot = PlotWidget("Specific heat flux along the combustion wall")
-        self.plot.setMinimumHeight(170)
-        self.plot.setMaximumHeight(320)
+        self.plot.setMinimumHeight(340)
         self.plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        layout.addWidget(self.plot, 3)
+        layout.addWidget(self.plot)
 
         self.contour_plot = PlotWidget("Nozzle contour")
-        self.contour_plot.setMinimumHeight(120)
-        self.contour_plot.setMaximumHeight(220)
+        self.contour_plot.setMinimumHeight(220)
         self.contour_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        layout.addWidget(self.contour_plot, 2)
+        layout.addWidget(self.contour_plot)
 
     def set_language(self, tr):
         self.lbl_T_wall_material_max.setText(tr(
@@ -1464,6 +1484,14 @@ class ThermalPage(QWidget):
             "<thead><tr>" + "".join(header_cells) + "</tr></thead><tbody>" +
             "".join(body_rows) + "</tbody></table></div></body>"
         )
+        self.table.document().adjustSize()
+        table_width = int(np.ceil(self.table.document().idealWidth())) + 30
+        self.table.document().setTextWidth(table_width)
+        self.table.document().adjustSize()
+        table_height = int(np.ceil(self.table.document().size().height())) + 24
+        self.table.setMinimumWidth(max(900, table_width))
+        self.table.setMinimumHeight(max(280, table_height))
+        self.table.setMaximumHeight(max(280, table_height))
 
     def clear_results(self):
         self._last_max_temperature = None
@@ -1511,14 +1539,14 @@ class ThermalPage(QWidget):
                 ) + "</tr>"
             )
         return (
-            "<div style='font-family:Segoe UI, Arial; font-size:12px;'>"
-            "<table style='border-collapse:collapse; width:100%;'>"
-            + "".join(html_rows) +
-            "</table></div>"
+                "<div style='font-family:Segoe UI, Arial; font-size:12px;'>"
+                "<table style='border-collapse:collapse; width:100%;'>"
+                + "".join(html_rows) +
+                "</table></div>"
         )
 
 
-# ------------------ Поток-воркер для расчёта M ------------------ #
+# Run the expensive Mach-number calculation outside the GUI thread.
 class MWorker(QtCore.QObject):
     progressed = QtCore.pyqtSignal(int)
     finished = QtCore.pyqtSignal(object)
@@ -1540,12 +1568,12 @@ class MWorker(QtCore.QObject):
             self.failed.emit(str(e))
 
 
-# -------------------------------------- UI -------------------------------------- #
+# Main application window: coordinates user input, calculations, plots, and exports.
 class Window(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        # --- свой заголовок вместо системного ---
+        # --- Custom title bar replacing the system title bar ---
         self.setWindowFlag(Qt.FramelessWindowHint, True)
         self._drag_pos = None  # для перетаскивания окна
 
@@ -1554,18 +1582,18 @@ class Window(QMainWindow):
         self._language = "en"
         self._last_report_args = None
 
-        # ----- локаль -----
+        # ----- Locale -----
         self._locale = QLocale(QLocale.English)
         QLocale.setDefault(self._locale)
 
-        # ----- корневой лэйаут окна -----
+        # ----- Root window layout -----
         root = QWidget()
         self.setCentralWidget(root)
         h = QHBoxLayout(root)
         h.setContentsMargins(4, 4, 4, 4)
         h.setSpacing(4)
 
-        # ===== левое меню =====
+        # ===== Left navigation menu =====
         left = QFrame()
         left.setObjectName("side")
         left.setMinimumWidth(160)  # можно добавить ещё setMaximumWidth(260) при желании
@@ -1604,11 +1632,11 @@ class Window(QMainWindow):
 
         vleft.addStretch(1)
 
-        # ===== центральный стек =====
+        # ===== Central page stack =====
         self.stack = QStackedWidget()
         self.stack.setObjectName("centralStack")
 
-        # ====== ГЛАВНАЯ ======
+        # ====== MAIN PAGE ======
         page_main = QWidget()
         self.page_main = page_main
         mainGrid = QGridLayout(page_main)
@@ -1616,9 +1644,9 @@ class Window(QMainWindow):
         mainGrid.setHorizontalSpacing(15)
         mainGrid.setVerticalSpacing(10)
 
-        # ---- левая колонка: прокручиваемая панель + кнопка снизу ----
+        # ---- Left column: scrollable panel with an action button below ----
 
-        # Виджет с полями (то, что будет внутри прокрутки)
+        # Input-fields widget placed inside the scroll area.
         inputsWidget = QWidget()
         inputsWidget.setObjectName("inputPanel")
         vInputs = QVBoxLayout(inputsWidget)
@@ -1631,7 +1659,7 @@ class Window(QMainWindow):
         self.chk_autoTk.stateChanged.connect(self.on_auto_mode_toggled)
         vInputs.addWidget(self.chk_autoTk)
 
-        # Сетка параметров
+        # Parameter grid.
         self.required_inputs_frame = QFrame()
         self.required_inputs_frame.setObjectName("requiredInputsFrame")
         required_inputs_layout = QVBoxLayout(self.required_inputs_frame)
@@ -1653,7 +1681,7 @@ class Window(QMainWindow):
         grid.setColumnMinimumWidth(0, LABEL_W)
         grid.setColumnStretch(0, 0)
         grid.setColumnStretch(1, 1)  # растягиваем колонку с полями
-        # grid.setColumnStretch(2, 1)    # третью колонку не используем
+        # grid.setColumnStretch(2, 1)    # The third column is unused.
         required_inputs_layout.addLayout(grid)
         vInputs.addWidget(self.required_inputs_frame)
 
@@ -1692,7 +1720,7 @@ class Window(QMainWindow):
 
         row = 0
 
-        # ===== Топливная пара =====
+        # ===== Propellant pair =====
         self.lbl_propellant_pair = QLabel("Propellant pair:")
         grid.addWidget(self.lbl_propellant_pair, row, 0, 1, 2,
                        alignment=Qt.AlignLeft | Qt.AlignVCenter)
@@ -1729,42 +1757,42 @@ class Window(QMainWindow):
         grid.addWidget(fuel_row, row + 1, 0, 1, 2, alignment=Qt.AlignLeft)
         row += 2
 
-        # ===== СТАНДАРТНЫЕ ПАРАМЕТРЫ =====
+        # ===== Standard parameters =====
         # self.ed_k_m = QLineEdit();
         # self.ed_k_m.setFixedWidth(FIELD_W);
         # self.ed_k_m.setMinimumHeight(26)
-        # add_row(row, "Весовое соотношение\nкомпонентов топлива", self.ed_k_m);
+        # add_row(row, "Propellant component\nmass ratio", self.ed_k_m);
         # row += 1
         #
         # self.ed_R = QLineEdit();
         # self.ed_R.setMinimumWidth(FIELD_W);
         # self.ed_R.setMinimumHeight(26)
-        # add_row(row, "Газовая постоянная", self.ed_R)
-        # self.add_overlay_unit(self.ed_R, "Дж/(кг·К)");
+        # add_row(row, "Gas constant", self.ed_R)
+        # self.add_overlay_unit(self.ed_R, "J/(kg·K)");
         # row += 1
         #
         # self.ed_k = QLineEdit();
         # self.ed_k.setFixedWidth(FIELD_W);
         # self.ed_k.setMinimumHeight(26)
-        # add_row(row, "Показатель адиабаты", self.ed_k);
+        # add_row(row, "Specific heat ratio", self.ed_k);
         # row += 1
         #
         # self.ed_Tst = QLineEdit();
         # self.ed_Tst.setFixedWidth(FIELD_W);
         # self.ed_Tst.setMinimumHeight(26)
-        # add_row(row, "Стандартная температура\nгорения топлива", self.ed_Tst)
-        # self.add_overlay_unit(self.ed_Tst, "К");
+        # add_row(row, "Standard propellant\ncombustion temperature", self.ed_Tst)
+        # self.add_overlay_unit(self.ed_Tst, "K");
         # row += 1
         #
         # self.ed_Jst = QLineEdit();
         # self.ed_Jst.setFixedWidth(FIELD_W);
         # self.ed_Jst.setMinimumHeight(26)
-        # add_row(row, "Стандартный удельный \nимпульс тяги", self.ed_Jst)
-        # self.add_overlay_unit(self.ed_Jst, "Н·с/кг");
+        # add_row(row, "Standard specific\nthrust impulse", self.ed_Jst)
+        # self.add_overlay_unit(self.ed_Jst, "N·s/kg");
         # row += 1
 
-        # ===== СТАНДАРТНЫЕ ПАРАМЕТРЫ ТОПЛИВА =====
-        # Поля создаются здесь, но добавляются не в основную форму, а в отдельное окно
+        # ===== Standard propellant parameters =====
+        # These fields are created here but displayed in a separate dialog.
 
         self.ed_k_m = QLineEdit()
         self.ed_k_m.setFixedWidth(FIELD_W)
@@ -1789,7 +1817,7 @@ class Window(QMainWindow):
         self.ed_Jst.setMinimumHeight(26)
         self.unit_Jst = self.add_overlay_unit(self.ed_Jst, "m/s")
 
-        # ===== РУЧНЫЕ ПОЛЯ =====
+        # ===== Manually entered fields =====
         self.ed_p_k = QLineEdit();
         self.ed_p_k.setFixedWidth(FIELD_W);
         self.ed_p_k.setMinimumHeight(26)
@@ -1859,7 +1887,7 @@ class Window(QMainWindow):
         self.lbl_z_k = QLabel("Number of combustion chambers N_c")
         self.lbl_z_k.hide()
 
-        # ===== АВТО-ПОЛЯ =====
+        # ===== Automatically calculated fields =====
         self.ed_T_k = QLineEdit();
         self.ed_T_k.setFixedWidth(FIELD_W);
         self.ed_T_k.setMinimumHeight(26)
@@ -1890,13 +1918,13 @@ class Window(QMainWindow):
 
         vInputs.addStretch(1)
 
-        # --- кнопка расчёта ПОД панелью с прокруткой ---
+        # --- Calculation button below the scrollable panel ---
         self.btn_calc_params = QPushButton("Calculate engine and nozzle")
         self.btn_calc_params.clicked.connect(self.on_calc_params)
         self.btn_calc_params.setMinimumHeight(32)
         self.btn_calc_params.setMinimumWidth(FIELD_W)
 
-        # --- область прокрутки только для inputsWidget ---
+        # --- Scroll area containing only inputsWidget ---
         scroll_inputs = QScrollArea()
         scroll_inputs.setWidgetResizable(True)
         scroll_inputs.setFrameShape(QFrame.NoFrame)
@@ -1906,7 +1934,7 @@ class Window(QMainWindow):
         scroll_inputs.setMinimumWidth(420)  # как у тебя было; можно поменять
         scroll_inputs.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
 
-        # --- левая колонка: сверху скролл, снизу кнопка ---
+        # --- Left column: scroll area above, action button below ---
         leftColumn = QWidget()
         leftColumn.setMinimumWidth(LEFT_TOTAL_W)  # ← фиксируем ширину всей левой части
         vLeftColumn = QVBoxLayout(leftColumn)
@@ -1916,7 +1944,7 @@ class Window(QMainWindow):
         vLeftColumn.addSpacing(12)
         vLeftColumn.addWidget(self.btn_calc_params, 0, Qt.AlignRight)
 
-        # ===== трекинг override и сигналы =====
+        # ===== Manual-override tracking and signal connections =====
         self._auto_fields = {
             "T_k": self.ed_T_k,  # "p_a": self.ed_p_a,
             "J_pr_ud_st": self.ed_Jpr, "J_r_ud": self.ed_Jr, "J_0_ud": self.ed_J0
@@ -1942,12 +1970,12 @@ class Window(QMainWindow):
         for ed in list(self._std_fields.values()) + list(self._user_fields.values()):
             ed.textEdited.connect(lambda *_: self.timer.start())
 
-        # спец. логика для p_k
+        # Special handling for chamber pressure.
         self.ed_P_0.textEdited.connect(lambda *_: self._on_thrust_edited("P_0"))
         self.ed_P_8.textEdited.connect(lambda *_: self._on_thrust_edited("P_8"))
         self.ed_p_k.textEdited.connect(self._on_p_k_manual_change)
 
-        # ---- правая колонка: отчёт ----
+        # ---- Right column: calculation report ----
         self.txtParams = QTextEdit()
         self.txtParams.setObjectName("reportBox")
         self.txtParams.setReadOnly(True)
@@ -1979,13 +2007,13 @@ class Window(QMainWindow):
         vRightColumn.addWidget(self.lbl_nozzle_status, 0)
         vRightColumn.addWidget(self.txtParams, 1)
 
-        # ---- разместим две колонки в одной главной сетке ----
+        # ---- Place both columns in the main grid ----
         mainGrid.addWidget(leftColumn, 0, 0, 1, 1)
         mainGrid.addWidget(rightColumn, 0, 1, 1, 1)
         mainGrid.setColumnStretch(0, 0)
         mainGrid.setColumnStretch(1, 1)
 
-        # ===== страницы графиков =====
+        # ===== Plot pages =====
         self.page_geom = GraphPage("Nozzle geometry", "Draw the nozzle", show_info=False)
 
         self.page_M = GraphPage("Mach number along the nozzle M(x)", "Calculate Mach number", show_info=True)
@@ -2013,7 +2041,7 @@ class Window(QMainWindow):
 
         h.addWidget(left)
 
-        # Обёртка для центральной части
+        # Wrapper for the central content area.
         center_wrap = QWidget()
         center_wrap.setObjectName("centerPanel")
         center_layout = QVBoxLayout(center_wrap)
@@ -2022,7 +2050,7 @@ class Window(QMainWindow):
         center_layout.addWidget(self.stack)
         h.addWidget(center_wrap, 1)
 
-        # ===== стиль, статусбар, таймер =====
+        # ===== Styling, status bar, and timer =====
         self.setStyleSheet("""
             #side { background:#2b66a4; color:#fff; border-radius:16px; }
         """)
@@ -2041,14 +2069,14 @@ class Window(QMainWindow):
         self.timer.setInterval(200)
         self.timer.timeout.connect(self.recompute)
 
-        # ===== данные =====
+        # ===== Runtime data =====
         self.x_curve = None
         self.y_curve = None
         self.M = None
         self.T = None
         self.P = None
 
-        # ===== инициализация/сигналы =====
+        # ===== Initialization and signal connections =====
         self.cbFuel.setCurrentIndex(0)
         self.model.set_fuel(self.cbFuel.itemData(0))
         self.on_change()
@@ -2060,7 +2088,7 @@ class Window(QMainWindow):
         self.ed_p_a.textChanged.connect(lambda: self.timer.start())
         self.ed_p_a.editingFinished.connect(lambda: self._enforce_p_e_bounds(show_warning=True))
 
-        # фильтр ввода для числовых
+        # Input filter for numeric fields.
         self._all_numeric_edits = [
             self.ed_k_m, self.ed_R, self.ed_k, self.ed_Tst, self.ed_Jst,
             self.ed_p_k, self.ed_P_0, self.ed_P_8,
@@ -2069,7 +2097,7 @@ class Window(QMainWindow):
         for ed in self._all_numeric_edits:
             ed.installEventFilter(self)
 
-        # навигация
+        # Navigation.
         self.btn_page_main.clicked.connect(lambda: self._goto(0, self.btn_page_main))
         self.btn_page_geom.clicked.connect(lambda: self._goto(1, self.btn_page_geom))
         self.btn_page_M.clicked.connect(lambda: self._goto(2, self.btn_page_M))
@@ -2078,20 +2106,20 @@ class Window(QMainWindow):
         self.btn_page_thermal.clicked.connect(lambda: self._goto(5, self.btn_page_thermal))
         self._goto(0, self.btn_page_main)
 
-        # ===== Минимальные размеры =====
+        # ===== Minimum window dimensions =====
         RIGHT_MIN_W = 430
         MENU_W = 150
         self.setMinimumWidth(MENU_W + LEFT_TOTAL_W + RIGHT_MIN_W + 80)
         self.setMinimumHeight(600)
 
-        # ===== Тулбар + Тема/Settings =====
+        # ===== Toolbar, theme, and settings =====
         self._build_toolbar()
         self._load_settings_and_theme()
         self._update_max_button_icon()
         self._apply_language()
         self._on_calc_mode_changed()
 
-        # восстановление геометрии окна
+        # Restore the previous window geometry.
         try:
             sz = self._settings.value("window/size")
             pos = self._settings.value("window/pos")
@@ -2194,7 +2222,8 @@ class Window(QMainWindow):
         self.lbl_z_k.setText(tr("Number of combustion chambers N_c", "Число камер сгорания N_c"))
         self.lbl_T_k.setText(tr("Chamber temperature T_c", "Температура продуктов в камере T_c"))
         self.lbl_p_a.setText(tr("Nozzle exit pressure p_e", "Давление на срезе сопла p_e"))
-        self.lbl_Jpr.setText(tr("Reduced reference specific impulse J_red", "Приведённый опорный удельный импульс J_red"))
+        self.lbl_Jpr.setText \
+            (tr("Reduced reference specific impulse J_red", "Приведённый опорный удельный импульс J_red"))
         self.lbl_Jr.setText(tr("Design specific impulse J_design", "Удельный импульс на расчётном режиме J_design"))
         self.lbl_J0.setText(tr("Sea-level specific impulse J_SL", "Удельный импульс на уровне моря J_SL"))
         self.unit_R.setText(tr("J/(kg K)", "Дж/(кг К)"))
@@ -2235,12 +2264,14 @@ class Window(QMainWindow):
         self.page_thermal.set_language(tr)
         for page in (self.page_M, self.page_T, self.page_P):
             page.language = self._language
-            page.hover_label.setText(tr("x = -    |    R = -    |    value = -", "x = -    |    R = -    |    значение = -"))
+            page.hover_label.setText \
+                (tr("x = -    |    R = -    |    value = -", "x = -    |    R = -    |    значение = -"))
             page.search_value.setPlaceholderText(tr("value", "значение"))
             page.btn_search_point.setToolTip(tr("Find the nearest point", "Найти ближайшую точку"))
 
         self.act_calc.setText(tr("Calculate engine and nozzle (Ctrl+R)", "Рассчитать двигатель и сопло (Ctrl+R)"))
-        self.act_calc.setStatusTip(tr("Calculate geometry and update the report", "Рассчитать геометрию и обновить отчет"))
+        self.act_calc.setStatusTip \
+            (tr("Calculate geometry and update the report", "Рассчитать геометрию и обновить отчет"))
         self.act_geom.setText(tr("Drawing (Ctrl+D)", "Чертеж (Ctrl+D)"))
         self.act_geom.setStatusTip(tr("Show the nozzle drawing", "Показать чертеж сопла"))
         self.btn_tb_open.setToolTip(tr("Auto-fill... (Ctrl+L)", "Автозаполнение... (Ctrl+L)"))
@@ -2294,13 +2325,13 @@ class Window(QMainWindow):
             f"{self._tr('Exit', 'Выход')}:               \tx = {xou:.2f} {self._tr('mm', 'мм')},  "
             f"Re = {m.R_a:.2f} {self._tr('mm', 'мм')},  {label} = {vou:.6g} {unit}\n\n"
             f"{self._tr('Specific heat ratio', 'Показатель адиабаты')} \tγ = {m.k:.4g},\n"
-            # f"Сводка:\n"
-            # f"Радиус критики\tRкр\t{m.R_kr:.2f} мм,\n"
-            # f"Dкр = {m.D_kr:.2f} мм,\n"
-            # f"Da = {m.D_a:.2f} мм,\n"
+            # f"Summary:\n"
+            # f"Throat radius\tRth\t{m.R_kr:.2f} mm,\n"
+            # f"Dth = {m.D_kr:.2f} mm,\n"
+            # f"Da = {m.D_a:.2f} mm,\n"
             # f"f_a = {m.fa:.3f},\n"
-            # f"pк = {m.p_k:.4g} МПа,\n"
-            # f"pа = {m.p_a:.6g} МПа"
+            # f"pc = {m.p_k:.4g} MPa,\n"
+            # f"pe = {m.p_a:.6g} MPa"
         )
 
     def open_fuel_params_dialog(self):
@@ -2312,7 +2343,7 @@ class Window(QMainWindow):
         main.setContentsMargins(8, 8, 12, 12)
         main.setSpacing(22)
 
-        # ===== ЛЕВАЯ ЧАСТЬ: список топливных пар =====
+        # ===== LEFT SIDE: propellant-pair list =====
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
@@ -2409,7 +2440,7 @@ class Window(QMainWindow):
 
         main.addWidget(left)
 
-        # ===== ПРАВАЯ ЧАСТЬ: параметры выбранной пары =====
+        # ===== RIGHT SIDE: parameters of the selected pair =====
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
@@ -2471,7 +2502,7 @@ class Window(QMainWindow):
 
         main.addWidget(right)
 
-        # ===== ЛОГИКА =====
+        # ===== Dialog behavior =====
         def load_fuel_from_list(row_idx):
             if row_idx < 0:
                 return
@@ -2588,7 +2619,7 @@ class Window(QMainWindow):
         self._fuel_params_dialog = dlg
 
     def eventFilter(self, obj, event):
-        # ===== 1. Кнопка редактирования топливной пары =====
+        # ===== 1. Edit-propellant-pair button =====
         if hasattr(self, "btn_edit_fuel") and obj == self.btn_edit_fuel:
             if event.type() == QEvent.Enter:
                 self.btn_edit_fuel.setIcon(self.icon_edit_hover)
@@ -2598,7 +2629,7 @@ class Window(QMainWindow):
                 self.btn_edit_fuel.setIcon(self.icon_edit_normal)
                 return False
 
-        # ===== 2. Кнопка удаления топливной пары =====
+        # ===== 2. Delete-propellant-pair button =====
         if hasattr(self, "btn_delete_fuel") and obj == self.btn_delete_fuel:
             if event.type() == QEvent.Enter:
                 self.btn_delete_fuel.setIcon(self.icon_delete_hover)
@@ -2608,7 +2639,7 @@ class Window(QMainWindow):
                 self.btn_delete_fuel.setIcon(self.icon_delete_normal)
                 return False
 
-        # ===== 3. Фильтр ввода для числовых QLineEdit =====
+        # ===== 3. Input filter for numeric QLineEdit fields =====
         if (
                 hasattr(self, "_all_numeric_edits")
                 and obj in self._all_numeric_edits
@@ -2654,6 +2685,7 @@ class Window(QMainWindow):
 
     # ---------------- Toolbar / Theme ----------------
     def _build_toolbar(self):
+        # Build the custom title bar and global application controls.
         from PyQt5.QtWidgets import QAction
 
         tb = self.addToolBar("Main")
@@ -2661,7 +2693,7 @@ class Window(QMainWindow):
         tb.setIconSize(QtCore.QSize(18, 18))
         s = self.style()
 
-        # --- действия с горячими клавишами (НЕ на тулбаре) ---
+        # --- Keyboard shortcuts not shown on the toolbar ---
         self.act_calc = QAction(s.standardIcon(s.SP_MediaPlay),
                                 "Calculate parameters (Ctrl+R)", self)
         self.act_calc.setShortcut("Ctrl+R")
@@ -2676,13 +2708,13 @@ class Window(QMainWindow):
         self.act_geom.triggered.connect(self.on_draw_geom)
         self.addAction(self.act_geom)
 
-        # --- содержимое тулбара как один виджет ---
+        # --- Toolbar content grouped into a single widget ---
         wrap = QWidget()
         lay = QHBoxLayout(wrap)
         lay.setContentsMargins(6, 0, 6, 0)
         lay.setSpacing(10)
 
-        # 1) Кнопка "Открыть"
+        # 1) Open button.
         self.btn_tb_open = QPushButton()
         self.btn_tb_open.setIcon(s.standardIcon(s.SP_DialogOpenButton))
         self.btn_tb_open.setFlat(True)
@@ -2691,7 +2723,7 @@ class Window(QMainWindow):
         self.btn_tb_open.setFixedSize(26, 24)
         lay.addWidget(self.btn_tb_open)
 
-        # 2) Кнопка "Сохранить"
+        # 2) Save button.
         self.btn_tb_save = QPushButton()
         self.btn_tb_save.setIcon(s.standardIcon(s.SP_DialogSaveButton))
         self.btn_tb_save.setFlat(True)
@@ -2700,7 +2732,7 @@ class Window(QMainWindow):
         self.btn_tb_save.setFixedSize(26, 24)
         lay.addWidget(self.btn_tb_save)
 
-        # 3) Тумблер темы
+        # 3) Theme toggle.
         self.btn_themeToggle = QPushButton("☀")
         self.btn_themeToggle.setObjectName("themeToggle")
         self.btn_themeToggle.setCheckable(True)
@@ -2719,10 +2751,10 @@ class Window(QMainWindow):
         self.btn_language.clicked.connect(self._toggle_language)
         lay.addWidget(self.btn_language)
 
-        # 5) Растяжка слева от заголовка
+        # 5) Spacer to the left of the title.
         lay.addStretch(1)
 
-        # 6) Название приложения
+        # 6) Application title.
         self.lbl_title = QLabel("LRE Nozzle Designer")
         f = self.lbl_title.font()
         f.setPointSize(12)
@@ -2734,7 +2766,7 @@ class Window(QMainWindow):
 
         lay.addStretch(1)
 
-        # 7) Кнопки окна справа
+        # 7) Window controls on the right.
         buttons_wrap = QWidget()
         hb = QHBoxLayout(buttons_wrap)
         hb.setContentsMargins(12, 0, 0, 0)
@@ -2850,7 +2882,7 @@ class Window(QMainWindow):
             theme_bg = "#1F1F1F"
             theme_fg = "#EDE7F6"
 
-            # <<< вот ЭТИ четыре + общий цвет текста >>>
+            # Apply these four colors together with the shared text color.
             hover_bg = "#3D2C78"
             hover_fg = "#FFFFFF"
             select_bg = "#BB86FC"
@@ -2891,7 +2923,7 @@ class Window(QMainWindow):
             theme_bg = "#EDE7F6"
             theme_fg = "#311B92"
 
-            # цвета для выпадающих списков в светлой теме
+            # Colors for drop-down lists in the light theme.
             hover_bg = "#E8DDFF"
             hover_fg = "#311B92"
             select_bg = "#6200EE"
@@ -3104,7 +3136,7 @@ class Window(QMainWindow):
 
         self.setStyleSheet(base_styles)
 
-        # применяем ту же тему к matplotlib-графикам
+        # Apply the same theme to the Matplotlib plots.
         if hasattr(self, "page_geom"):
             try:
                 self._set_plot_theme(mode)
@@ -3229,7 +3261,7 @@ class Window(QMainWindow):
         except Exception:
             pass
 
-    # --- перетаскивание окна ---
+    # --- Frameless-window dragging ---
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton and event.pos().y() <= 40:
             self._drag_pos = event.globalPos() - self.frameGeometry().topLeft()
@@ -3265,16 +3297,16 @@ class Window(QMainWindow):
         """Handle toggling the Auto-fill checkbox."""
         self._auto_mode = (state == Qt.Checked)
 
-        # В полном авто-режиме запретим редактировать авто-поля,
-        # чтобы было понятно, что ими управляет программа.
+        # In full automatic mode, lock calculated fields to make it clear
+        # that their values are controlled by the application.
         for key, ed in self._auto_fields.items():
             ed.setReadOnly(self._auto_mode)
 
-        # При включении авторежима забываем ручные переопределения
+        # Discard manual overrides when automatic mode is enabled.
         if self._auto_mode:
             self._overridden.clear()
 
-        # Пересчитать всё с учётом нового режима
+        # Recalculate all dependent values for the new mode.
         if hasattr(self, "timer"):
             self.timer.start()
 
@@ -3289,6 +3321,7 @@ class Window(QMainWindow):
         return key not in self._overridden
 
     def _load_settings_and_theme(self):
+        # Restore persisted UI preferences without affecting engineering inputs.
         self._settings = QtCore.QSettings("LRE", "NozzleDesigner")
         theme = self._settings.value("ui/theme", "light")
         if theme not in ("light", "dark"):
@@ -3301,7 +3334,7 @@ class Window(QMainWindow):
         self._settings.setValue("window/pos", self.pos())
         super().closeEvent(ev)
 
-    # ---------------- Остальной функционал окна ----------------
+    # ---------------- Remaining window functionality ----------------
 
     def _report_text(self) -> str:
         try:
@@ -3348,6 +3381,7 @@ class Window(QMainWindow):
         return source, self._v(fields[source])
 
     def _resolve_design_thrust(self, p_k, thrust_value, thrust_source, coefJ, z_k, T_k, p_e, p_h):
+        # Normalize sea-level or vacuum thrust into the active design condition.
         self.model.compute_geometry(p_k, 1.0, coefJ, z_k, T_k, p_e, p_h=p_h, calc_mode=self._calc_mode)
         if thrust_source == "P_0":
             if self.model.J_0_ud is None or self.model.J_0_ud <= 0:
@@ -3360,8 +3394,8 @@ class Window(QMainWindow):
         return thrust_value
 
     def _on_p_k_manual_change(self, *_):
-        # как только пользователь меняет p_k,
-        # снова разрешаем автоматически пересчитывать T_k
+        # Re-enable automatic combustion-temperature calculation whenever
+        # the user changes chamber pressure.
         if "T_k" in self._overridden:
             self._overridden.remove("T_k")
 
@@ -3573,14 +3607,15 @@ class Window(QMainWindow):
         return p_e
 
     def on_calc_params(self):
-        # 1. Сначала пробрасываем ручные значения "табличных" параметров в модель
+        # Validate user inputs, execute the main model, and refresh all derived values.
+        # 1. Copy manually entered reference parameters into the model first.
         for attr, ed in self._std_fields.items():
             val = self._v(ed)
             if val is not None:
                 setattr(self.model, attr, val)
 
-        # Если галочка автозаполнения выключена и ты хочешь,
-        # чтобы вручную введённые авто-поля тоже использовались в модели:
+        # When automatic filling is disabled, preserve manually entered values
+        # for fields that are normally calculated by the application.
         if not self.chk_autoTk.isChecked():
             for attr, ed in self._auto_fields.items():
                 val = self._v(ed)
@@ -3599,7 +3634,7 @@ class Window(QMainWindow):
         self.ed_z_k.setText("1")
         cur_Tk = fnum(self.ed_T_k)
 
-        # В полном авто-режиме T_k всегда берём из формулы
+        # In full automatic mode, always calculate T_k from the correlation.
         if self._auto_mode and (p_k is not None):
             Tk_auto = self.model.auto_Tk(p_k)
             if Tk_auto is not None and np.isfinite(Tk_auto):
@@ -3631,7 +3666,7 @@ class Window(QMainWindow):
             (z_k <= 0, self._tr("The number of chambers must be positive.",
                                 "Количество камер должно быть положительным.")),
             (thrust_value <= 0, self._tr("Thrust must be positive.",
-                                   "Расчетная тяга P_h должна быть положительной.")),
+                                         "Расчетная тяга P_h должна быть положительной.")),
         ]
         for failed, message in checks:
             if failed:
@@ -3771,13 +3806,13 @@ class Window(QMainWindow):
         add_row(rows, inputs, self._tr("Chamber pressure p_c", "Давление в камере сгорания p_c"), p_k, unit_mpa)
         add_row(rows, inputs, self._tr("Nozzle exit pressure p_e", "Давление на срезе сопла p_e"), p_a, unit_mpa)
         add_row(rows, inputs, self._tr("Chamber temperature T_c", "Температура продуктов в камере T_c"), T_k, unit_k)
-        # add_row(rows, "Входные и ключевые параметры", "Показатель адиабаты", self.model.k)
-        # add_row(rows, "Входные и ключевые параметры", "Газовая постоянная", self.model.R, "Дж/(кг·К)")
+        # add_row(rows, "Input and key parameters", "Specific heat ratio", self.model.k)
+        # add_row(rows, "Input and key parameters", "Gas constant", self.model.R, "J/(kg·K)")
         add_row(rows, inputs, self._tr("Propellant mass ratio K_m", "Массовое соотношение компонентов K_m"),
                 self.model.k_m)
 
-        # add_row(rows, "Удельные импульсы и расходы", "Приведённый стандартный удельный импульс тяги",
-        #         get_val("J*_пр,уд,ст", self.ed_Jpr), "Н·с/кг")
+        # add_row(rows, "Specific impulses and flow rates", "Adjusted standard specific thrust impulse",
+        #         get_val("J*_adj,std", self.ed_Jpr), "N·s/kg")
         add_row(rows, impulses, self._tr("Design specific impulse J_design",
                                          "Удельный импульс на расчётном режиме J_design"),
                 get_val("J*_р,уд", self.ed_Jr), unit_isp)
@@ -3790,7 +3825,7 @@ class Window(QMainWindow):
                 get_val("ṁ сум"), unit_flow)
         add_row(rows, impulses, self._tr("Fuel flow rate", "Расход горючего"), get_val("ṁ_г"), unit_flow)
         add_row(rows, impulses, self._tr("Oxidizer flow rate", "Расход окислителя"), get_val("ṁ_ок"), unit_flow)
-        # add_row(rows, "Удельные импульсы и расходы", "Расчётный коэффициент", get_val("K0"))
+        # add_row(rows, "Specific impulses and flow rates", "Calculated coefficient", get_val("K0"))
 
         add_row(rows, geometry, self._tr("Nozzle throat diameter D_t", "Диаметр критического сечения D_t"),
                 get_val("D_kr"), unit_mm)
@@ -3809,7 +3844,7 @@ class Window(QMainWindow):
         add_row(rows, geometry, self._tr("Chamber-nozzle assembly length L_total", "Полная длина камеры и сопла L_total"),
                 get_val("Lдв"), unit_mm)
 
-        # --- текстовый вариант ---
+        # --- Plain-text report variant ---
         text_lines = []
         current_section = None
         line_width = 60
@@ -3843,7 +3878,7 @@ class Window(QMainWindow):
         text_block = "\n".join(text_lines)
         self._last_report_text = text_block
 
-        # --- табличный вариант ---
+        # --- Tabular report variant ---
         html = f"""<div style="font-family:Consolas, Courier New; font-size:10pt;">
             <pre>{text_block}</pre>
 
@@ -3901,6 +3936,7 @@ class Window(QMainWindow):
         self.txtParams.setHtml(html)
 
     def _build_globals_from_model(self):
+        # Prepare contour data required by the asynchronous Mach-number calculation.
         global a1, a2, alpha1, alpha2
         global D_k, D_kr, D_a, R_k, R_kr, R_a, R3
         global L_g, L_cy, L_vh, L_c, L_dv
@@ -3915,8 +3951,9 @@ class Window(QMainWindow):
         L_dv = float(self.model.L_dv)
         x = None
 
-    # ---------- Кнопки M ----------
+    # ---------- Mach-number controls ----------
     def on_calc_M(self):
+        # Start the Mach-number worker and keep the interface responsive.
         if self.x_curve is None or self.y_curve is None:
             QMessageBox.information(self, self._tr("Parameters required", "Сначала параметры"),
                                     self._tr("Click 'Calculate parameters' first.",
@@ -3971,7 +4008,7 @@ class Window(QMainWindow):
         self.page_M.btn_calc.setEnabled(True)
         QMessageBox.critical(self, self._tr("Error calculating M", "Ошибка при расчете M"), msg)
 
-    # ---------- Кнопки T ----------
+    # ---------- Temperature controls ----------
     def on_calc_T(self):
         if self.M is None:
             QMessageBox.information(self, self._tr("No M data", "Нет M"),
@@ -3988,7 +4025,7 @@ class Window(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, self._tr("Error calculating T", "Ошибка при расчете T"), str(e))
 
-    # ---------- Кнопки P ----------
+    # ---------- Pressure controls ----------
     def on_calc_P(self):
         if self.M is None:
             QMessageBox.information(self, self._tr("No M data", "Нет M"),
@@ -4020,6 +4057,7 @@ class Window(QMainWindow):
             return None
 
     def _thermal_find_s_folders(self, pair_number):
+        # Locate thermal reference datasets for the selected propellant pair.
         root = self._project_root()
         folders = []
         for folder in root.glob("para *"):
@@ -4331,6 +4369,7 @@ class Window(QMainWindow):
         return all_x.astype(float), smooth_y.astype(float)
 
     def _thermal_build_q0_reference(self):
+        # Reconstruct the reference heat-flux curve from bundled chart images.
         if hasattr(self, "_q0_reference_cache"):
             return self._q0_reference_cache
         csv_path = self._project_root() / "q0_digitized_reference_table.csv"
@@ -4449,6 +4488,7 @@ class Window(QMainWindow):
         return 1.0 + (r_ratio - 1.0) / (2.5 - 1.0)
 
     def on_calc_thermal(self):
+        # Calculate wall temperatures, heat fluxes, and total thermal losses.
         if self.x_curve is None or self.y_curve is None:
             QMessageBox.information(self, self._tr("Parameters required", "Сначала параметры"),
                                     self._tr("Click 'Calculate parameters' first.",
@@ -4592,7 +4632,8 @@ class Window(QMainWindow):
             )
             self.page_thermal.set_results(T_gas_wall, S_gas_wall, cumulative, rows)
             self._goto(5, self.btn_page_thermal)
-            self.statusbar.showMessage(self._tr("Thermal-load calculation completed.", "Расчёт тепловых нагрузок выполнен."), 3000)
+            self.statusbar.showMessage \
+                (self._tr("Thermal-load calculation completed.", "Расчёт тепловых нагрузок выполнен."), 3000)
         except Exception as e:
             self.page_thermal.clear_results()
             QMessageBox.critical(self, self._tr("Thermal loads", "Тепловые нагрузки"), str(e))
@@ -4686,7 +4727,8 @@ class Window(QMainWindow):
 
             S_ratio = [area_between_points(i) for i in range(index_edge)]
 
-            q_k = q0 * (float(self.model.p_k) / p_ko) ** 0.87 * (R_kro / float(self.model.R_kr)) ** 0.13 * (S_gas_wall / So)
+            q_k = q0 * (float(self.model.p_k) / p_ko) ** 0.87 * (R_kro / float(self.model.R_kr)) ** 0.13 * \
+                        (S_gas_wall / So)
             q_l_coef = np.asarray([
                 0.2 if branch == "precritical" and ratio >= 1.19 else
                 0.05 if branch in ("precritical", "critical") else
@@ -4745,8 +4787,10 @@ class Window(QMainWindow):
                 points=(x_heat, radii[:index_edge]),
                 xlabel=self._tr("x [mm]", "x [\u043c\u043c]"),
                 ylabel=self._tr("R [mm]", "R [\u043c\u043c]"),
-                line_label=self._tr("nozzle contour", "\u043a\u043e\u043d\u0442\u0443\u0440 \u0441\u043e\u043f\u043b\u0430"),
-                points_label=self._tr("thermal points", "\u0442\u043e\u0447\u043a\u0438 \u0442\u0435\u043f\u043b\u043e\u0432\u043e\u0433\u043e \u0440\u0430\u0441\u0447\u0435\u0442\u0430"),
+                line_label=self._tr("nozzle contour",
+                                    "\u043a\u043e\u043d\u0442\u0443\u0440 \u0441\u043e\u043f\u043b\u0430"),
+                points_label=self._tr("thermal points",
+                                      "\u0442\u043e\u0447\u043a\u0438 \u0442\u0435\u043f\u043b\u043e\u0432\u043e\u0433\u043e \u0440\u0430\u0441\u0447\u0435\u0442\u0430"),
                 xlim=xlim,
                 vlines=x_heat
             )
@@ -4817,14 +4861,88 @@ class Window(QMainWindow):
             raise RuntimeError(self._tr(f"Error reading {os.path.basename(path)}: {e}",
                                         f"Ошибка чтения {os.path.basename(path)}: {e}"))
 
+    def _read_thermal_table_from_xlsx(self, path):
+        raw = pd.read_excel(path, header=None)
+        labels = getattr(self.page_thermal, "_table_parameter_labels", {})
+        label_to_column = {str(label).replace("\n", " ").strip(): column for column, label in labels.items()}
+        label_to_column.update({str(column).replace("\n", " ").strip(): column for column in labels})
+
+        table_start = None
+        for idx in range(len(raw.index)):
+            first = str(raw.iloc[idx, 0]).strip()
+            if first in ("Parameter", "Параметр"):
+                row_values = [str(v).strip() for v in raw.iloc[idx].tolist() if pd.notna(v)]
+                if any(value.startswith("Point") or value.startswith("Точка") for value in row_values):
+                    table_start = idx
+                    break
+        if table_start is None:
+            return None
+
+        rows = {}
+        for idx in range(table_start + 1, len(raw.index)):
+            label = raw.iloc[idx, 0]
+            if pd.isna(label):
+                continue
+            key = str(label).replace("\n", " ").strip()
+            column = label_to_column.get(key)
+            if column is None:
+                continue
+            rows[column] = raw.iloc[idx, 1:].dropna().tolist()
+
+        if not rows:
+            return None
+        return pd.DataFrame(rows)
+
     def _read_thermal_table(self, folder):
         csv_path = self._find_file(folder, "thermal_calculation", ["csv"])
         xlsx_path = self._find_file(folder, "thermal_calculation", ["xlsx"])
         if csv_path:
             return pd.read_csv(csv_path, sep=";", decimal=",", encoding="utf-8-sig")
         if xlsx_path:
-            return pd.read_excel(xlsx_path, header=None)
+            return self._read_thermal_table_from_xlsx(xlsx_path)
         return None
+
+    def _read_thermal_summary_from_xlsx(self, path):
+        raw = pd.read_excel(path, header=None)
+        values = []
+        for idx in range(min(len(raw.index), 8)):
+            if raw.shape[1] < 2:
+                break
+            value = self._float_from_text(raw.iloc[idx, 1])
+            if value is not None and np.isfinite(value):
+                values.append(value)
+        if len(values) < 4:
+            return {}
+        return {
+            "T_wall_material_max": values[0],
+            "T_gas_wall": values[1],
+            "S_gas_wall": values[2],
+            "Q": values[3],
+        }
+
+    def _read_thermal_summary(self, folder):
+        summary_path = self._find_file(folder, "thermal_summary", ["csv"])
+        if summary_path:
+            try:
+                frame = pd.read_csv(summary_path, sep=";", decimal=",", encoding="utf-8-sig")
+                result = {}
+                for _, row in frame.iterrows():
+                    key = str(row.get("key", "")).strip()
+                    value = self._float_from_text(row.get("value", None))
+                    if key and value is not None:
+                        result[key] = value
+                if result:
+                    return result
+            except Exception:
+                pass
+
+        xlsx_path = self._find_file(folder, "thermal_calculation", ["xlsx"])
+        if xlsx_path:
+            try:
+                return self._read_thermal_summary_from_xlsx(xlsx_path)
+            except Exception:
+                return {}
+        return {}
 
     def _restore_thermal_results_from_folder(self, folder):
         table = self._read_thermal_table(folder)
@@ -4846,21 +4964,32 @@ class Window(QMainWindow):
                 table[column] = pd.to_numeric(table[column], errors="coerce")
 
         self.heat_load_table = table
-        self.Q = float(table["Q_cum [W]"].dropna().iloc[-1]) if "Q_cum [W]" in table.columns and not table["Q_cum [W]"].dropna().empty else None
+        if "Q_cum [W]" in table.columns and not table["Q_cum [W]"].dropna().empty:
+            self.Q = float(table["Q_cum [W]"].dropna().iloc[-1])
+        else:
+            self.Q = 0.0
 
-        T_wall = None
-        try:
+        summary = self._read_thermal_summary(folder)
+        T_wall = summary.get("T_wall_material_max")
+        if T_wall is None:
             T_wall = self._float_from_text(self.page_thermal.ed_T_wall_material_max.text())
-        except Exception:
-            T_wall = None
         self.T_wall_material_max = T_wall
-        self.T_gas_wall = T_wall - 50.0 if T_wall is not None else getattr(self.page_thermal, "_last_gas_wall_temperature", None)
-        self.S_gas_wall = getattr(self.page_thermal, "_last_s_value", None)
+        self.T_gas_wall = summary.get("T_gas_wall")
+        if self.T_gas_wall is None and T_wall is not None:
+            self.T_gas_wall = T_wall - 50.0
+        self.S_gas_wall = summary.get("S_gas_wall")
+        if self.S_gas_wall is None:
+            self.S_gas_wall = getattr(self.page_thermal, "_last_s_value", None)
         if self.T_gas_wall is not None and self.S_gas_wall is None:
             try:
                 self.S_gas_wall, _ = self._thermal_interpolate_s(self._thermal_collect_s_values(), self.T_gas_wall)
             except Exception:
                 self.S_gas_wall = None
+        if summary.get("Q") is not None:
+            self.Q = float(summary["Q"])
+        if self.T_wall_material_max is not None:
+            with QtCore.QSignalBlocker(self.page_thermal.ed_T_wall_material_max):
+                self.page_thermal.ed_T_wall_material_max.setText(f"{float(self.T_wall_material_max):.10g}")
 
         x_heat = np.asarray(table["x [mm]"], dtype=float)
         q_k = np.asarray(table["q_k [W/m^2]"], dtype=float)
@@ -4900,7 +5029,7 @@ class Window(QMainWindow):
         self.page_thermal.set_results(
             self.T_gas_wall if self.T_gas_wall is not None else 0.0,
             self.S_gas_wall if self.S_gas_wall is not None else 0.0,
-            self.Q if self.Q is not None else 0.0,
+            self.Q,
             table
         )
         return True
@@ -4982,6 +5111,7 @@ class Window(QMainWindow):
         edit.blockSignals(False)
 
     def on_load_autofill(self):
+        # Import a previous result set and repopulate compatible input fields.
         folder = QFileDialog.getExistingDirectory(
             self, self._tr("Select a folder containing saved files", "Выберите папку с сохраненными файлами"))
         if not folder:
@@ -5035,7 +5165,7 @@ class Window(QMainWindow):
             except Exception:
                 pass
 
-            # Сначала пробуем новый формат: один файл xyz.*, затем старый xy.*
+            # Try the new single-file xyz.* format first, then fall back to xy.*.
             path_xy = self._find_file(folder, "xyz", ["csv", "txt"])
             if not path_xy:
                 path_xy = self._find_file(folder, "xy", ["csv", "txt"])
@@ -5051,7 +5181,7 @@ class Window(QMainWindow):
                     except Exception:
                         pass
             else:
-                # старый формат на всякий случай оставим
+                # Keep compatibility with the legacy format.
                 path_x = self._find_file(folder, "x", ["csv", "txt"])
                 path_y = self._find_file(folder, "y", ["csv", "txt"])
                 if path_x and path_y:
@@ -5076,6 +5206,7 @@ class Window(QMainWindow):
                 if self.M.size == self.x_curve.size:
                     self.page_M.draw_fill(self.x_curve, self.y_curve, self.M, y0=0.0, cmap="turbo", refine=4,
                                           clabel="M")
+                    self.page_M.set_info(self._make_plot_info(self.M, "M", ""))
                     self.page_M.btn_calc.setEnabled(True)
                     drew = True
 
@@ -5084,6 +5215,7 @@ class Window(QMainWindow):
                 if self.T.size == self.x_curve.size:
                     self.page_T.draw_fill(self.x_curve, self.y_curve, self.T, y0=0.0, cmap="turbo", refine=4,
                                           clabel=self._tr("T, K", "T, К"))
+                    self.page_T.set_info(self._make_plot_info(self.T, "T", "K"))
                     self.page_T.btn_calc.setEnabled(True)
                     drew = True
 
@@ -5092,6 +5224,7 @@ class Window(QMainWindow):
                 if self.P.size == self.x_curve.size:
                     self.page_P.draw_fill(self.x_curve, self.y_curve, self.P, y0=0.0, cmap="turbo", refine=4,
                                           clabel=self._tr("p, MPa", "p, МПа"))
+                    self.page_P.set_info(self._make_plot_info(self.P, "p", "MPa"))
                     self.page_P.btn_calc.setEnabled(True)
                     drew = True
 
@@ -5128,8 +5261,9 @@ class Window(QMainWindow):
             QMessageBox.critical(self, self._tr("Auto-fill", "Автозаполнение"),
                                  self._tr(f"Could not load data:\n{e}", f"Не удалось загрузить данные:\n{e}"))
 
-    # ---------- Сохранение результатов ----------
+    # ---------- Result export ----------
     def on_save_results(self):
+        # Export calculation results, plots, and supporting data to a result folder.
         def fmt_ru(val):
             if val is None:
                 return ""
@@ -5166,11 +5300,11 @@ class Window(QMainWindow):
             self.Q = getattr(self.page_thermal, "_last_q_value", None)
 
         have_thermal = (
-            getattr(self, "heat_load_table", None) is not None
-            and len(getattr(self, "heat_load_table")) > 0
-            and getattr(self, "T_gas_wall", None) is not None
-            and getattr(self, "S_gas_wall", None) is not None
-            and getattr(self, "Q", None) is not None
+                getattr(self, "heat_load_table", None) is not None
+                and len(getattr(self, "heat_load_table")) > 0
+                and getattr(self, "T_gas_wall", None) is not None
+                and getattr(self, "S_gas_wall", None) is not None
+                and getattr(self, "Q", None) is not None
         )
 
         base_dir = QFileDialog.getExistingDirectory(
@@ -5180,7 +5314,8 @@ class Window(QMainWindow):
 
         default_name = "LRE_results_" + datetime.now().strftime("%Y%m%d_%H%M%S")
         folder_name, ok = QInputDialog.getText(
-            self, self._tr("Folder name", "Имя папки"), self._tr("Enter a new folder name:", "Введите имя новой папки:"),
+            self, self._tr("Folder name", "Имя папки"),
+            self._tr("Enter a new folder name:", "Введите имя новой папки:"),
             QLineEdit.Normal, default_name
         )
         if not ok or not folder_name.strip():
@@ -5299,7 +5434,7 @@ class Window(QMainWindow):
             # with open(os.path.join(target_dir, "results_table.csv"), "w",
             #           newline="", encoding="utf-8-sig") as f:
             #     w = csv.writer(f, delimiter=";")
-            #     w.writerow(["Параметр", "Значение", "Единица"])
+            #     w.writerow(["Parameter", "Value", "Unit"])
             #     for key, value, unit in self._collect_results_table():
             #         w.writerow([key, fmt_ru(value), unit])
             # files_saved.append("results_table.csv")
@@ -5388,15 +5523,16 @@ class Window(QMainWindow):
         png_name = "thermal_heat_flux.png"
         xlsx_name = "thermal_calculation.xlsx"
         csv_name = "thermal_calculation.csv"
+        summary_csv_name = "thermal_summary.csv"
         png_path = os.path.join(target_dir, png_name)
         xlsx_path = os.path.join(target_dir, xlsx_name)
         csv_path = os.path.join(target_dir, csv_name)
+        summary_csv_path = os.path.join(target_dir, summary_csv_name)
 
         table = self.heat_load_table
         if not isinstance(table, pd.DataFrame):
             table = pd.DataFrame(table)
         self.heat_load_table = table
-
         table.to_csv(csv_path, index=False, sep=";", decimal=",", encoding="utf-8-sig")
 
         self.page_thermal.plot.fig.savefig(png_path, dpi=200, bbox_inches="tight")
@@ -5432,6 +5568,15 @@ class Window(QMainWindow):
             T_wall_material_max = getattr(self.page_thermal, "_last_max_temperature", None)
         if T_wall_material_max is None:
             T_wall_material_max = float(self.T_gas_wall) + 50.0
+
+        pd.DataFrame([
+            ("T_wall_material_max", float(T_wall_material_max), "K"),
+            ("T_gas_wall", float(self.T_gas_wall), "K"),
+            ("S_gas_wall", float(self.S_gas_wall), "-"),
+            ("Q", float(self.Q), "W"),
+        ], columns=["key", "value", "unit"]).to_csv(
+            summary_csv_path, index=False, sep=";", decimal=",", encoding="utf-8-sig"
+        )
 
         summary = [
             ("Предельно допустимая температура материала огневой стенки", float(T_wall_material_max), "K"),
@@ -5523,9 +5668,10 @@ class Window(QMainWindow):
         ws.page_setup.fitToWidth = 1
         ws.sheet_properties.pageSetUpPr.fitToPage = True
         wb.save(xlsx_path)
-        return [xlsx_name, csv_name, png_name]
+        return [xlsx_name, csv_name, summary_csv_name, png_name]
 
     def save_results_table_xlsx(self, path):
+        # Write the consolidated engineering results to a formatted Excel workbook.
         from openpyxl import Workbook
         from openpyxl.styles import PatternFill, Alignment, Font, Border, Side
         from openpyxl.utils import get_column_letter
@@ -5636,7 +5782,8 @@ class Window(QMainWindow):
             [inputs, self._tr("Specific heat ratio gamma", "Показатель адиабаты γ"), self.model.k, ""],
             [inputs, self._tr("Specific gas constant R_g", "Удельная газовая постоянная R_g"), self.model.R, gas_unit],
 
-            [impulses, self._tr("Reduced reference specific impulse J_red", "Приведённый опорный удельный импульс J_red"),
+            [impulses,
+             self._tr("Reduced reference specific impulse J_red", "Приведённый опорный удельный импульс J_red"),
              self.model.J_pr_ud_st, isp_unit],
             [impulses, self._tr("Design specific impulse J_design", "Удельный импульс на расчётном режиме J_design"),
              self.model.J_r_ud, isp_unit],
@@ -5655,11 +5802,13 @@ class Window(QMainWindow):
              self.model.fa, ""],
             [geometry, self._tr("Nozzle exit diameter D_e", "Диаметр среза сопла D_e"), self.model.D_a, mm],
             [geometry, self._tr("Combustion chamber diameter D_c", "Диаметр камеры сгорания D_c"), self.model.D_k, mm],
-            [geometry, self._tr("Divergent nozzle length L_div", "Длина расширяющейся части сопла L_div"), self.model.L_c, mm],
-            [geometry, self._tr("Chamber-nozzle assembly length L_total", "Полная длина камеры и сопла L_total"), self.model.L_dv, mm],
+            [geometry, self._tr("Divergent nozzle length L_div", "Длина расширяющейся части сопла L_div"),
+             self.model.L_c, mm],
+            [geometry, self._tr("Chamber-nozzle assembly length L_total", "Полная длина камеры и сопла L_total"),
+             self.model.L_dv, mm],
         ]
 
-    # ---------- прочее ----------
+    # ---------- Miscellaneous helpers ----------
 
     def _add_edit(self, grid: QGridLayout, row: int, col: int, label: str) -> QLineEdit:
         grid.addWidget(QLabel(label), row, col)
@@ -5739,7 +5888,8 @@ class Window(QMainWindow):
             if show_warning:
                 QMessageBox.warning(
                     self,
-                    self._tr("Nozzle exit pressure", "\u0414\u0430\u0432\u043b\u0435\u043d\u0438\u0435 \u043d\u0430 \u0441\u0440\u0435\u0437\u0435 \u0441\u043e\u043f\u043b\u0430"),
+                    self._tr("Nozzle exit pressure",
+                             "\u0414\u0430\u0432\u043b\u0435\u043d\u0438\u0435 \u043d\u0430 \u0441\u0440\u0435\u0437\u0435 \u0441\u043e\u043f\u043b\u0430"),
                     self._tr(
                         "Nozzle exit pressure was limited to 0.10856 MPa. Higher values are not used because 0.10856 MPa is taken as the maximum atmospheric pressure at Earth surface.",
                         "\u0414\u0430\u0432\u043b\u0435\u043d\u0438\u0435 \u043d\u0430 \u0441\u0440\u0435\u0437\u0435 \u0441\u043e\u043f\u043b\u0430 \u043e\u0433\u0440\u0430\u043d\u0438\u0447\u0435\u043d\u043e \u0437\u043d\u0430\u0447\u0435\u043d\u0438\u0435\u043c 0.10856 \u041c\u041f\u0430. \u0411\u043e\u043b\u0435\u0435 \u0432\u044b\u0441\u043e\u043a\u043e\u0435 \u0437\u043d\u0430\u0447\u0435\u043d\u0438\u0435 \u043d\u0435 \u0438\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0435\u0442\u0441\u044f, \u0442\u0430\u043a \u043a\u0430\u043a 0.10856 \u041c\u041f\u0430 \u043f\u0440\u0438\u043d\u044f\u0442\u043e \u043a\u0430\u043a \u043c\u0430\u043a\u0441\u0438\u043c\u0430\u043b\u044c\u043d\u043e\u0435 \u0430\u0442\u043c\u043e\u0441\u0444\u0435\u0440\u043d\u043e\u0435 \u0434\u0430\u0432\u043b\u0435\u043d\u0438\u0435 \u0443 \u043f\u043e\u0432\u0435\u0440\u0445\u043d\u043e\u0441\u0442\u0438 \u0417\u0435\u043c\u043b\u0438."
@@ -5788,6 +5938,7 @@ class Window(QMainWindow):
                 ed.setText(new)
 
     def recompute(self):
+        # Update dependent fields after a valid input value changes.
         m = self.model
         k_m = self._v(self.ed_k_m);
         R = self._v(self.ed_R);
@@ -5864,16 +6015,16 @@ class Window(QMainWindow):
         self._update_nozzle_status()
 
 
-# ----------------------------------- main ----------------------------------- #
+# Application entry point: configure Qt, create the window, and start the event loop.
 if __name__ == "__main__":
 
-    # --- High DPI для разных масштабов экрана ---
+    # --- High-DPI support for different display scaling factors ---
     QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
 
     app = QApplication(sys.argv)
 
-    # === Единый базовый шрифт ===
+    # === Shared base font ===
     font = QFont("Segoe UI", 10)
     app.setFont(font)
 
