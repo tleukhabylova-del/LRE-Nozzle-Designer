@@ -2,7 +2,6 @@
 import sys, re, os, html
 from datetime import datetime
 import numpy as np
-from collections import defaultdict
 import csv
 from pathlib import Path
 import pandas as pd
@@ -10,7 +9,7 @@ import pandas as pd
 from PyQt5.QtWidgets import QSizePolicy
 from PyQt5 import QtCore
 from PyQt5.QtCore import Qt, QTimer, QEvent, QLocale
-from PyQt5.QtGui import QDoubleValidator, QFont, QColor, QPalette, QCursor
+from PyQt5.QtGui import QDoubleValidator, QFont, QColor, QPalette
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QGridLayout, QVBoxLayout,
     QLabel, QLineEdit, QComboBox, QMessageBox, QCheckBox, QHBoxLayout, QPushButton,
@@ -26,22 +25,34 @@ from PyQt5.QtWidgets import QPushButton
 from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import QSize, QEvent
 
-from scipy.optimize import fsolve, minimize_scalar
 from scipy import ndimage
 
 # Embed Matplotlib plots inside the PyQt application window.
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
 import matplotlib.image as mpimg
-from matplotlib.patches import FancyArrowPatch
-from matplotlib.collections import PolyCollection
-from matplotlib.colors import Normalize
-import matplotlib.cm as cm
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Alignment, Font
 from openpyxl.utils import get_column_letter
+
+from lre_tool.constants import (
+    COEF_J_DEFAULT, J_st_list, NOZZLE_EXIT_PRESSURE_MAX_MPA, PARA,
+    PARA_DEFAULT, PARA_RU, R_st_list, T_st_list, k_m_list, k_st_list,
+)
+from lre_tool.dialogs import open_fuel_parameters_dialog
+from lre_tool.mach import MWorker
+from lre_tool.model import GeometryState, Model
+from lre_tool.pages import GraphPage, ThermalPage
+from lre_tool.plotting import crop_curve_by_x_range
+from lre_tool.persistence import (
+    read_report_parameters, read_thermal_summary_xlsx,
+    read_thermal_table_xlsx, write_results_table_xlsx,
+)
+from lre_tool.thermal import (
+    group_consecutive, interp_q0, interpolate_s, line_centers, local_slope,
+    median, nozzle_branch, radiative_coefficient, styled_branch_x,
+)
+from lre_tool.styles import apply_window_palette
+from lre_tool.validators import FlexibleDoubleValidator
 
 
 # Keep unexpected GUI errors visible instead of silently terminating the application.
@@ -57,1517 +68,18 @@ def _except_hook(exctype, value, tb):
 
 sys.excepthook = _except_hook
 
-NOZZLE_EXIT_PRESSURE_MAX_MPA = 0.10856
 
 # Reference performance data for each supported oxidizer-fuel combination.
-PARA = [
-    "Liquid oxygen - Kerosene              ",
-    "Liquid oxygen - Liquid hydrogen",
-    "Liquid oxygen - Liquid ammonia",
-    "Liquid oxygen - UDMH",
-    "Nitrogen tetroxide - UDMH",
-    "Nitrogen tetroxide - Aerozine 50",
-    "Nitrogen tetroxide - Hydrazine",
-    "Nitric acid - Kerosene",
-    "Nitric acid 70% / Nitrogen oxide 30% - UDMH",
-    "Nitric acid 73% / Nitrogen oxide 27% - UDMH",
-    "Nitric acid 80% / Nitrogen oxide 20% - UDMH",
-    "Nitric acid 73% / Nitrogen oxide 23% - Kerosene",
-    "Nitric acid 80% / Nitrogen oxide 20% - Kerosene",
-    "Nitric acid 73% / Nitrogen oxide 27% - Tonka 250",
-    "Nitric acid 80% / Nitrogen oxide 20% - Tonka 250",
-    "Nitric acid - Hydrazine",
-]
-PARA_DEFAULT = PARA.copy()
-PARA_RU = [
-    "Жидкий кислород - Керосин              ",
-    "Жидкий кислород - Жидкий водород",
-    "Жидкий кислород - Жидкий аммиак",
-    "Жидкий кислород - НДМГ",
-    "Четырехокись азота - НДМГ",
-    "Четырехокись азота - Аэрозин 50",
-    "Четырехокись азота - Гидразин",
-    "Азотная кислота - Керосин",
-    "Азотная кислота 70% / Оксид азота 30% - НДМГ",
-    "Азотная кислота 73% / Оксид азота 27% - НДМГ",
-    "Азотная кислота 80% / Оксид азота 20% - НДМГ",
-    "Азотная кислота 73% / Оксид азота 23% - Керосин",
-    "Азотная кислота 80% / Оксид азота 20% - Керосин",
-    "Азотная кислота 73% / Оксид азота 27% - Тонка 250",
-    "Азотная кислота 80% / Оксид азота 20% - Тонка 250",
-    "Азотная кислота - Гидразин",
-]
-k_m_list = [None, 3.40, 4.76, 1.41, 2.14, 3.07, 2.24, 1.44, 5.37, 3.00, 3.35, 3.37, 5.34, 5.37, 2.14, 4.67, 1.45]
-R_st_list = [None, 324, 520, 420, 359, 336, 357, 390, 308, 378, 340, 340, 313, 314, 312, 313, 409]
-k_st_list = [None, 1.11, 1.22, 1.16, 1.11, 1.13, 1.14, 1.17, 1.13, 1.14, 1.14, 1.14, 1.13, 1.31, 1.13, 1.13, 1.25]
-T_st_list = [None, 3631, 3270, 3045, 3575, 3382, 3322, 3231, 3087, 3140, 3134, 3115, 3128, 3107, 3143, 3122, 3045]
-J_st_list = [None, 3034, 3286, 3057, 3156, 2950, 2990, 3033, 2730, 2482, 2840, 2831, 2742, 2733, 2745, 2737, 2737]
 
-COEF_J_DEFAULT = 0.95
 
 
 # Core engineering model: computes propellant flow, nozzle geometry, and performance.
-class Model:
-    def __init__(self):
-        self.idx = 1
-        self.k_m = None
-        self.R = None
-        self.k = None
-        self.T_st = None
-        self.J_st_ud = None
-        # Input parameters.
-        self.p_k = None  # МПа
-        self.P_calc = None  # Н
-        self.P_h = None  # Н
-        self.P_0 = None  # Н
-        self.P_8 = None  # Н
-        self.coefJ = COEF_J_DEFAULT
-        self.z_k = None
-        self.T_k = None  # К
-        self.p_e = None  # МПа
-        self.p_h = None  # МПа
-        self.p_a = None  # МПа
-        self.p_0 = 0.0981  # МПа
-        self.p = 0.0981  # МПа
-        self.k1 = None
-
-        # --- Geometry ---
-        self.J_pr_ud_st = None
-        self.J_r_ud = None
-        self.J_h_ud = None
-        self.J_8_ud = None
-        self.J_0_ud = None
-        self.m_ = None
-        self.m_g = None
-        self.m_ok = None
-        self.K_0 = None
-        self.D_kr = None
-        self.fa = None
-        self.D_a = None
-        self.D_k = None
-
-        # Parameters used to construct the nozzle contour.
-        self.a = 5.0
-        self.b1 = 5.0
-        self.c1 = 0.0
-        self.a1 = self.a
-        self.a2 = self.a
-        self.alpha1 = 20 * np.pi / 180.0
-        self.alpha2 = 8 * np.pi / 180.0
-        self.R0 = None
-        self.R1 = None
-        self.R2 = None
-        self.R3 = None
-        self.R4 = None
-        self.gamma = None
-        self.betta = None
-
-        self.R_kr = None
-        self.R_a = None
-        self.R_k = None
-        self.R3 = None
-        self.L_c = None
-        self.L_vh = None
-        self.L_g = None
-        self.L_cy = None
-        self.L_dv = None
-        self.L_du = None
-
-    def set_fuel(self, idx: int):
-        # Load the thermodynamic constants associated with the selected propellant pair.
-        self.idx = idx
-        self.k_m = k_m_list[idx]
-        self.R = R_st_list[idx]
-        self.k = k_st_list[idx]
-        self.T_st = T_st_list[idx]
-        self.J_st_ud = J_st_list[idx]
-
-    def auto_Tk(self, p_k: float) -> float:
-        if self.T_st is None or p_k is None:
-            return None
-        return self.T_st * (86.9 - 0.578 * p_k + 6.27 * p_k ** 0.5) / 100.0
-
-    def min_p_a(self, coefJ: float, p_k: float, T_k: float) -> float:
-        k1 = (self.k - 1) / self.k
-        self.k1 = k1
-        R = self.R
-        J_st_ud = self.J_st_ud
-        p = self.p
-        fJr = lambda p_a: coefJ * J_st_ud * (0.67 - 0.016 * p_k + 0.163 * p_k ** 0.5) * np.sqrt(
-            (1 - (p_a / p_k) ** k1) * p_k ** k1 / (p_k ** k1 - 0.0981 ** k1))
-        fJ8 = lambda p_a: fJr(p_a) + R * T_k * (p_a / p_k) ** k1 / fJr(p_a)
-        f = lambda p_a: fJ8(p_a) - R * T_k * (p_a / p_k) ** k1 / fJr(p_a) * (p / p_a)
-        a = 20.0
-        for x0 in range(1, 100):
-            root, info, ier, msg = fsolve(f, x0 / 1000.0, full_output=True, maxfev=10000, xtol=1e-12)
-            if ier == 1:
-                a = float(root[0])
-        return a + 0.000000001
-        0.000000001
-        0.005861015066065835
-        0.005861015066
-
-    def calc_J_at_ambient(self, p_e, p_amb):
-        delta = self.R * self.T_k * (p_e / self.p_k) ** self.k1 / self.J_r_ud
-        return self.J_8_ud - delta * (p_amb / p_e)
-
-    def compute_geometry(self, p_k, P_calc, coefJ, z_k, T_k, p_e, p_h=0.0981, calc_mode="sea_level"):
-        # Convert the design inputs into specific impulse, mass flow, and nozzle dimensions.
-        self.p_k, self.P_calc, self.P_h = p_k, P_calc, P_calc
-        self.coefJ, self.z_k, self.T_k = coefJ, z_k, T_k
-        self.p_e, self.p_h, self.p_a = p_e, p_h, p_e
-        self.calc_mode = calc_mode
-        self.k1 = (self.k - 1) / self.k
-        eps = self.p_e / self.p_k
-
-        self.J_pr_ud_st = self.coefJ * self.J_st_ud
-        self.J_r_ud = self.J_pr_ud_st * (0.67 - 0.016 * self.p_k + 0.163 * self.p_k ** 0.5) * np.sqrt(
-            (1 - eps ** self.k1) * self.p_k ** self.k1 / (self.p_k ** self.k1 - 0.0981 ** self.k1))
-        self.J_8_ud = self.J_r_ud + self.R * self.T_k * eps ** self.k1 / self.J_r_ud
-        self.J_0_ud = self.calc_J_at_ambient(self.p_e, self.p_0)
-        self.J_h_ud = self.calc_J_at_ambient(self.p_e, self.p_h)
-        if self.J_h_ud <= 0:
-            raise ValueError("specific impulse in selected design mode is non-positive")
-        self.m_ = self.P_calc / (self.z_k * self.J_h_ud)
-        self.P_0 = self.m_ * self.z_k * self.J_0_ud
-        self.P_8 = self.m_ * self.z_k * self.J_8_ud
-        self.P_h = self.m_ * self.z_k * self.J_h_ud
-
-        self.m_g = self.m_ / (1 + self.k_m)
-        self.m_ok = self.m_ * self.k_m / (1 + self.k_m)
-        self.K_0 = (2 / (self.k + 1)) ** ((self.k + 1) / 2 / (self.k - 1)) * np.sqrt(self.k)
-
-        self.D_kr = np.sqrt(4 * self.m_ * np.sqrt(self.R * self.T_k) / (0.98 * np.pi * self.K_0 * self.p_k))
-        self.fa = (2 / (self.k + 1)) ** ((self.k + 1) / (2 * (self.k - 1))) * ((self.k - 1) / 2) ** 0.5 / np.sqrt(
-            (self.p_e / self.p_k) ** (2 / self.k) - (self.p_e / self.p_k) ** ((self.k + 1) / self.k))
-        self.D_a = self.D_kr * np.sqrt(self.fa)
-        self.D_k = self.D_kr * 2
-
-        self.R_kr = self.D_kr / 2
-        self.R_a = self.D_a / 2
-        self.R_k = self.D_k / 2
-
-        EO = self.R_a - self.R_kr
-
-        self.R3 = 2 * self.R_kr
-
-        self.L_c = (
-                (EO - self.R3 * (1 - np.cos(self.alpha1)))
-                * (np.sin(self.alpha1) - np.sin(self.alpha2))
-                / (np.cos(self.alpha2) - np.cos(self.alpha1))
-                + self.R3 * np.sin(self.alpha1)
-        )
-
-        self.R4 = (
-                          EO
-                          - self.R3 * (1 - np.cos(self.alpha1))
-                          - self.a * (np.sin(self.alpha1) + np.sin(self.alpha2))
-                  ) / (np.cos(self.alpha2) - np.cos(self.alpha1))
-
-        self.L_vh = 0.5 * np.sqrt(
-            self.D_k ** 2 + 3 * self.D_k * self.D_kr - 4 * self.D_kr ** 2
-        )
-
-        self.L_g = 0.25 * self.D_k
-        self.L_cy = 1.25 * self.D_k
-        self.L_dv = self.L_g + self.L_cy + self.L_vh + self.L_c
-        self.L_du = 2 * (self.L_c + self.L_vh)
-
-        d = self.R_k - self.R_kr
-
-        A = (self.L_vh + self.b1) ** 2 + d ** 2
-        B = -2 * (self.L_vh + self.b1) ** 2
-        C = (self.L_vh + self.b1) ** 2 - d ** 2
-        D = B ** 2 - 4 * A * C
-
-        cos_betta = (-B - np.sqrt(D)) / (2 * A)
-        self.betta = np.arccos(cos_betta)
-
-        self.R2 = (self.L_vh ** 2 + d ** 2 - self.b1 ** 2) / (2 * d) - self.R3
-
-        self.R1 = self.R_k / 4
-
-        cos_gamma = (
-                -2 * (self.L_g - self.R1) * (self.R1 - self.c1 - self.R_k)
-                / ((self.L_g - self.R1) ** 2 + (self.R1 - self.c1 - self.R_k) ** 2)
-        )
-
-        self.gamma = np.arccos(cos_gamma)
-
-        self.R0 = (
-                          self.L_g ** 2
-                          + self.R_k ** 2
-                          - self.c1 ** 2
-                          - 2 * self.R_k * self.R1
-                  ) / (2 * (self.L_g - self.R1))
-
-        return {
-            'D_kr': self.D_kr, 'D_a': self.D_a, 'D_k': self.D_k, 'f_a': self.fa,
-            'J*_пр,уд,ст': self.J_pr_ud_st, 'J*_р,уд': self.J_r_ud,
-            'J*_h,уд': self.J_h_ud, 'J*_8,уд': self.J_8_ud, 'J*_0,уд': self.J_0_ud,
-            'ṁ сум': self.m_, 'ṁ_г': self.m_g, 'ṁ_ок': self.m_ok, 'K0': self.K_0,
-            'L_g': self.L_g, 'L_ц': self.L_cy, 'L_вх': self.L_vh, 'L_c': self.L_c, 'Lдв': self.L_dv
-        }
-
-    # ====== NOZZLE CONTOUR ======
-    def take_x_y(self):
-        # Generate the chamber and nozzle contour used by plots and downstream calculations.
-        x_head0 = -(self.L_g + self.L_cy + self.L_vh)
-        x_cyl0 = -(self.L_cy + self.L_vh)
-        x_conv0 = -self.L_vh
-
-        # 1. Chamber head section.
-        O0 = np.array([self.R0, 0.0])
-        O1 = np.array([self.L_g, self.R_k - self.R1])
-
-        B = np.array([
-            self.R0 * (1 - np.sin(self.gamma)),
-            self.R0 * np.cos(self.gamma)
-        ])
-
-        C = np.array([
-            O1[0] - self.R1 * np.sin(self.gamma),
-            O1[1] + self.R1 * np.cos(self.gamma)
-        ])
-
-        t0 = np.linspace(np.pi, np.pi / 2 + self.gamma, 200)
-        x_head_arc0 = x_head0 + O0[0] + self.R0 * np.cos(t0)
-        y_head_arc0 = O0[1] + self.R0 * np.sin(t0)
-
-        x_head_line = x_head0 + np.array([B[0], C[0]])
-        y_head_line = np.array([B[1], C[1]])
-
-        t1 = np.linspace(np.pi / 2 + self.gamma, np.pi / 2, 200)
-        x_head_arc1 = x_head0 + O1[0] + self.R1 * np.cos(t1)
-        y_head_arc1 = O1[1] + self.R1 * np.sin(t1)
-
-        # 2. Cylindrical chamber section.
-        x_cyl = np.array([x_cyl0, x_conv0])
-        y_cyl = np.array([self.R_k, self.R_k])
-
-        # 3. Converging section leading to the throat.
-        d = self.R_k - self.R_kr
-
-        O2 = np.array([0.0, d - self.R2])
-        O3 = np.array([self.L_vh, self.R3])
-
-        P2 = np.array([
-            O2[0] + self.R2 * np.sin(self.betta),
-            O2[1] + self.R2 * np.cos(self.betta)
-        ])
-
-        P3 = np.array([
-            O3[0] - self.R3 * np.sin(self.betta),
-            O3[1] - self.R3 * np.cos(self.betta)
-        ])
-
-        t2 = np.linspace(np.pi / 2, np.pi / 2 - self.betta, 200)
-        x_conv_arc2 = x_conv0 + O2[0] + self.R2 * np.cos(t2)
-        y_conv_arc2 = self.R_kr + O2[1] + self.R2 * np.sin(t2)
-
-        x_conv_line = x_conv0 + np.array([P2[0], P3[0]])
-        y_conv_line = self.R_kr + np.array([P2[1], P3[1]])
-
-        t3 = np.linspace(3 * np.pi / 2 - self.betta, 3 * np.pi / 2, 200)
-        x_conv_arc3 = x_conv0 + O3[0] + self.R3 * np.cos(t3)
-        y_conv_arc3 = self.R_kr + O3[1] + self.R3 * np.sin(t3)
-
-        # 4. Diverging nozzle section.
-        B = np.array([
-            self.R3 * np.sin(self.alpha1),
-            self.R3 * (1 - np.cos(self.alpha1))
-        ])
-
-        C = B + self.a * np.array([
-            np.cos(self.alpha1),
-            np.sin(self.alpha1)
-        ])
-
-        O4 = np.array([
-            C[0] + self.R4 * np.sin(self.alpha1),
-            C[1] - self.R4 * np.cos(self.alpha1)
-        ])
-
-        D = O4 + np.array([
-            -self.R4 * np.sin(self.alpha2),
-            self.R4 * np.cos(self.alpha2)
-        ])
-
-        E = D + self.a * np.array([
-            np.cos(self.alpha2),
-            np.sin(self.alpha2)
-        ])
-
-        O3_div = np.array([0.0, self.R3])
-
-        t4 = np.linspace(-np.pi / 2, -np.pi / 2 + self.alpha1, 200)
-        x_div_arc3 = O3_div[0] + self.R3 * np.cos(t4)
-        y_div_arc3 = self.R_kr + O3_div[1] + self.R3 * np.sin(t4)
-
-        x_div_line1 = np.array([B[0], C[0]])
-        y_div_line1 = self.R_kr + np.array([B[1], C[1]])
-
-        t5 = np.linspace(np.pi / 2 + self.alpha1, np.pi / 2 + self.alpha2, 300)
-        x_div_arc4 = O4[0] + self.R4 * np.cos(t5)
-        y_div_arc4 = self.R_kr + O4[1] + self.R4 * np.sin(t5)
-
-        x_div_line2 = np.array([D[0], E[0]])
-        y_div_line2 = self.R_kr + np.array([D[1], E[1]])
-
-        x_contour = np.concatenate([
-            x_head_arc0,
-            x_head_line,
-            x_head_arc1,
-            x_cyl,
-            x_conv_arc2,
-            x_conv_line,
-            x_conv_arc3,
-            x_div_arc3,
-            x_div_line1,
-            x_div_arc4,
-            x_div_line2
-        ])
-
-        y_contour = np.concatenate([
-            y_head_arc0,
-            y_head_line,
-            y_head_arc1,
-            y_cyl,
-            y_conv_arc2,
-            y_conv_line,
-            y_conv_arc3,
-            y_div_arc3,
-            y_div_line1,
-            y_div_arc4,
-            y_div_line2
-        ])
-
-        xmin = np.min(x_contour)
-        x_contour = x_contour - xmin
-
-        X = [
-            0,
-            self.L_g,
-            self.L_g + self.L_cy,
-            self.L_g + self.L_cy + self.L_vh,
-            self.L_g + self.L_cy + self.L_vh + self.L_c,
-            self.L_g + self.L_cy + self.L_vh + self.L_c
-        ]
-
-        Y = [
-            0,
-            self.R_k,
-            self.R_k,
-            self.R_kr,
-            self.R_a,
-            0
-        ]
-
-        return x_contour, y_contour, X, Y
 
 
 # Shared nozzle-profile arrays consumed by the Mach-number solver.
-a1 = a2 = alpha1 = alpha2 = None
-D_k = D_kr = D_a = R_k = R_kr = R_a = R3 = None
-L_g = L_cy = L_vh = L_c = L_dv = None
-x = None  # массив x вдоль сопла
-
-
 # Solve the Mach-number distribution along the nozzle and report progress to the UI.
-def funM(y, m=10, progress_cb=None):
-    global x, k, R_kr, L_g, L_cy
-    if x is None or len(x) != len(y):
-        x = np.arange(len(y), dtype=float)
-
-    def replace_by_best(a, f, ndigits=2):
-        a = np.asarray(a, dtype=float)
-        groups = defaultdict(list)
-        for i, val in enumerate(a):
-            key = round(val, ndigits)
-            groups[key].append(i)
-        for _, indices in groups.items():
-            if len(indices) > 1:
-                vals = [a[i] for i in indices]
-                fvals = [f(xx) for xx in vals]
-                best_idx = indices[int(np.argmin(fvals))]
-                best_val = a[best_idx]
-                for j in indices:
-                    a[j] = best_val
-        for i in range(len(a)):
-            if (not np.isfinite(a[i])) or abs(f(a[i])) > 1e-4:
-                a[i] = 20
-        a_round = np.round(a, 12)
-        a2 = sorted(set(a_round.tolist()))
-        for i in range(len(a2)):
-            a[i] = a2[i]
-        for i in range(len(a2), len(a)):
-            a[i] = 20
-        return a
-
-    def fill_gaps(arr):
-        arr = np.asarray(arr, dtype=float).copy()
-        n = len(arr);
-        i = 0
-        while i < n:
-            if arr[i] == 20:
-                start = i
-                while i < n and arr[i] == 20:
-                    i += 1
-                end = i - 1
-                Lidx = start - 1
-                Ridx = end + 1
-                kseg = end - start + 1
-                for j in range(1, kseg + 1):
-                    if Lidx >= 0 and Ridx < n:
-                        da = (arr[Ridx] - arr[Lidx]) / (kseg + 1)
-                        arr[start + j - 1] = arr[Lidx] + da * j
-                    if Lidx < 0 and Ridx < n:
-                        arr[start + j - 1] = arr[end + 1]
-                    if Ridx == n and Lidx >= 0:
-                        arr[start + j - 1] = arr[start - 1]
-            else:
-                i += 1
-        return arr
-
-    def sortM(A):
-        idx_start = np.argmin(np.abs(x - (L_g + L_cy)))
-        idx_m1 = np.argmin(np.abs(y - R_kr))
-
-        for i in range(0, idx_m1):
-            if A[i][0] > 1.0:
-                A[i][0], A[i][1] = A[i][1], A[i][0]
-        for i in range(idx_m1, len(x)):
-            if A[i][0] < 1.0:
-                A[i][0], A[i][1] = A[i][1], A[i][0]
-
-        Arr = [A[i][0] for i in range(len(x))]
-        Arr[:idx_start] = [Arr[idx_start] for _ in Arr[:idx_start]]
-        Arr = fill_gaps(Arr)
-        return Arr
-
-    A = [[1, 1] for _ in range(len(x))]
-    idx_m1 = np.argmin(np.abs(y - R_kr))
-
-    for i in range(len(x)):
-        yi = y[i]
-        if progress_cb and (i % 5 == 0 or i == len(x) - 1):
-            progress_cb(int(100 * (i + 1) / len(x)))
-
-        m_loc = 80 if abs(i - idx_m1) < 5 else 2.5
-        f = lambda M: 1 / M * (2 / (k + 1) * (1 + (k - 1) * M ** 2 / 2)) ** (
-                (k + 1) / 2 / (k - 1)) - yi ** 2 / R_kr ** 2
-
-        res = minimize_scalar(f)
-        if res.fun >= 0:
-            a = [20, 20]
-        else:
-            starts = [s / m_loc for s in range(1, int(4 * m_loc))]
-            roots = [float(fsolve(f, s0)[0]) for s0 in starts]
-            a = replace_by_best(roots, f)
-
-        A[i] = [a[0], a[1]]
-
-    Arr = sortM(A)
-    return np.asarray(Arr, dtype=float)
-
-
 # Reusable interactive plotting canvas for performance curves and nozzle geometry.
-class PlotWidget(QWidget):
-    def __init__(self, title=""):
-        super().__init__()
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(8, 8, 8, 8)
-
-        self.fig = Figure(figsize=(6, 4), dpi=100)
-        self.canvas = FigureCanvas(self.fig)
-        lay.addWidget(self.canvas)
-
-        self.ax = self.fig.add_subplot(111)
-        self.title = title
-        self._responsive_margins = False
-        self._layout_update_pending = False
-
-        # Use the light theme by default.
-        self._theme_mode = "light"
-        self.fg_color = "#000000"
-        self.bg_color = "#ffffff"
-        self._apply_ax_theme()
-
-        self._hover_x = None
-        self._hover_val = None
-        self._hover_label = ""
-        self.hover_text_changed = None
-        self.point_clicked = None
-        self.canvas.mpl_connect("motion_notify_event", self._on_hover)
-        self.canvas.mpl_connect("button_press_event", self._on_click)
-
-        self._hover_x = None
-        self._hover_y = None
-        self._hover_val = None
-        self._hover_label = ""
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if self._responsive_margins and not self._layout_update_pending:
-            self._layout_update_pending = True
-            QTimer.singleShot(0, self._update_responsive_margins)
-
-    def _update_responsive_margins(self):
-        self._layout_update_pending = False
-        if not self._responsive_margins or self.width() < 2 or self.height() < 2:
-            return
-        self._apply_line_margins()
-        self.canvas.draw_idle()
-
-    def _apply_line_margins(self):
-        """Keep titles and axis labels inside the canvas at small window sizes."""
-        canvas_width = max(1, self.canvas.width())
-        canvas_height = max(1, self.canvas.height())
-        compact = canvas_height < 220
-        self.ax.title.set_fontsize(10 if compact else 12)
-        self.ax.xaxis.label.set_fontsize(9 if compact else 10)
-        self.ax.yaxis.label.set_fontsize(8 if compact else 10)
-        self.ax.tick_params(labelsize=8 if compact else 10)
-        legend = self.ax.get_legend()
-        if legend is not None:
-            for text_item in legend.get_texts():
-                text_item.set_fontsize(8 if compact else 10)
-        left = min(0.18, max(0.08, 75.0 / canvas_width))
-        right = 1.0 - min(0.08, max(0.02, 16.0 / canvas_width))
-        bottom = min(0.42, max(0.15, 58.0 / canvas_height))
-        top = 1.0 - min(0.25, max(0.08, 30.0 / canvas_height))
-        self.fig.subplots_adjust(
-            left=left,
-            right=right,
-            top=top,
-            bottom=bottom,
-        )
-
-    def _split_label_unit(self, clabel):
-        if "," in clabel:
-            label, unit = clabel.split(",", 1)
-            return label.strip(), unit.strip()
-        return clabel.strip(), ""
-
-    def _nearest_data_text(self, event):
-        if event.inaxes != self.ax:
-            return None
-
-        if self._hover_x is None or self._hover_y is None or self._hover_val is None:
-            return None
-
-        if event.xdata is None:
-            return None
-
-        x_arr = np.asarray(self._hover_x, dtype=float)
-        y_arr = np.asarray(self._hover_y, dtype=float)
-        val_arr = np.asarray(self._hover_val, dtype=float)
-
-        idx = int(np.argmin(np.abs(x_arr - event.xdata)))
-
-        label = self._hover_label if self._hover_label else "value"
-        unit = self._hover_unit if hasattr(self, "_hover_unit") else ""
-        unit_s = f" {unit}" if unit else ""
-
-        return (
-            f"x={x_arr[idx]:.3f} mm   |   "
-            f"R={y_arr[idx]:.3f} mm   |   "
-            f"{label}={val_arr[idx]:.6g}{unit_s}"
-        )
-
-    def _on_click(self, event):
-        if event.button != 1:
-            return
-
-        text = self._nearest_data_text(event)
-
-        if text is not None and self.point_clicked is not None:
-            self.point_clicked(text)
-
-    def _on_hover(self, event):
-        text = self._nearest_data_text(event)
-
-        if text is None:
-            text = " "
-            QToolTip.hideText()
-        else:
-            QToolTip.showText(QCursor.pos(), text.replace("   |   ", "\n"), self.canvas)
-
-        if self.hover_text_changed is not None:
-            self.hover_text_changed(text)
-
-    # --- Plot theme switching ---
-    def set_theme(self, mode: str):
-        """mode: 'light' | 'dark'"""
-        if mode not in ("light", "dark"):
-            mode = "light"
-        self._theme_mode = mode
-        if mode == "dark":
-            self.bg_color = "#1b1f26"
-            self.fg_color = "#f4f4f4"
-        else:
-            self.bg_color = "#ffffff"
-            self.fg_color = "#111827"
-        self._apply_ax_theme()
-        self.canvas.draw_idle()
-
-    def _apply_ax_theme(self):
-        """Apply the current foreground/background colors to the figure and axes."""
-        self.fig.set_facecolor(self.bg_color)
-        if self.ax is None:
-            return
-        self.ax.set_facecolor(self.bg_color)
-        # Plot borders.
-        for sp in self.ax.spines.values():
-            sp.set_color(self.fg_color)
-        # Axes, labels, and title.
-        self.ax.tick_params(colors=self.fg_color)
-        self.ax.xaxis.label.set_color(self.fg_color)
-        self.ax.yaxis.label.set_color(self.fg_color)
-        self.ax.title.set_color(self.fg_color)
-        legend = self.ax.get_legend()
-        if legend is not None:
-            legend.get_frame().set_facecolor(self.bg_color)
-            legend.get_frame().set_edgecolor(self.fg_color)
-            for text in legend.get_texts():
-                text.set_color(self.fg_color)
-
-    def clear(self):
-        self.fig.clf()
-        self.ax = self.fig.add_subplot(111)
-        self._apply_ax_theme()
-
-    def draw_fill(self, x_arr, y_arr, val_arr, y0=0.0, cmap="turbo", refine=2, clabel=""):
-        self.clear()
-        x_arr = np.asarray(x_arr);
-        y_arr = np.asarray(y_arr);
-        val_arr = np.asarray(val_arr)
-
-        idx = np.argsort(x_arr)
-        x, y, T = x_arr[idx], y_arr[idx], val_arr[idx]
-
-        try:
-            x0_nozzle = float(L_g + L_cy)
-            mask = x >= x0_nozzle
-            if np.any(mask):
-                x, y, T = x[mask], y[mask], T[mask]
-        except Exception:
-            pass
-
-        label, unit = self._split_label_unit(clabel if clabel else "value")
-
-        self._hover_x = x
-        self._hover_y = y
-        self._hover_val = T
-        self._hover_label = label
-        self._hover_unit = unit
-
-        if len(x) < 2:
-            self.canvas.draw_idle()
-            return
-
-        tmin, tmax = np.nanmin(T), np.nanmax(T)
-        norm = Normalize(tmin - 0.5, tmax + 0.5) if np.isclose(tmax, tmin) else Normalize(tmin, tmax)
-
-        verts, colors = [], []
-        m = max(1, int(refine))
-        for i in range(len(x) - 1):
-            xs = np.linspace(x[i], x[i + 1], m + 1)
-            ys = np.linspace(y[i], y[i + 1], m + 1)
-            Ts = np.linspace(T[i], T[i + 1], m + 1)
-            for j in range(m):
-                verts.append([(xs[j], y0),
-                              (xs[j], ys[j]),
-                              (xs[j + 1], ys[j + 1]),
-                              (xs[j + 1], y0)])
-                colors.append(0.5 * (Ts[j] + Ts[j + 1]))
-
-        coll = PolyCollection(verts, array=np.asarray(colors), cmap=cmap,
-                              norm=norm, antialiased=False,
-                              linewidth=0, edgecolor="none")
-        self.ax.add_collection(coll)
-
-        divider = make_axes_locatable(self.ax)
-        cax = divider.append_axes("right", size="3%", pad=0.05)
-        cb = self.fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), cax=cax)
-
-        # Match the color bar to the active theme.
-        cb.outline.set_edgecolor(self.fg_color)
-        cb.ax.tick_params(color=self.fg_color)
-        for lab in cb.ax.get_yticklabels():
-            lab.set_color(self.fg_color)
-
-        # Nozzle contour.
-        self.ax.plot(x, y, color=self.fg_color, lw=0.8)
-        self.ax.set_aspect("equal", adjustable="box")
-        self.ax.set_title(self.title)
-        self.ax.set_xlim(float(x.min()), float(x.max()) * 1.01)
-
-        try:
-            y_top = float(max(R_k, R_a))
-            self.ax.set_ylim(0.0, y_top * 1.02)
-        except Exception:
-            pass
-
-        self.ax.relim()
-        self.ax.autoscale_view(scalex=False, scaley=False)
-        self.fig.tight_layout(pad=0)
-        self.fig.subplots_adjust(left=0.07, right=0.92, top=0.92, bottom=0.10)
-        self.canvas.draw_idle()
-
-    def draw_lines(self, x_arr, series, xlabel="", ylabel="", xlim=None, vlines=None):
-        self.clear()
-        self._responsive_margins = True
-        x_arr = np.asarray(x_arr, dtype=float)
-        for y_arr, label in series:
-            y_arr = np.asarray(y_arr, dtype=float)
-            self.ax.plot(x_arr, y_arr, lw=2.0, label=label)
-        self.ax.set_title(self.title)
-        self.ax.set_xlabel(xlabel)
-        self.ax.set_ylabel(ylabel)
-        if xlim is not None:
-            self.ax.set_xlim(float(xlim[0]), float(xlim[1]))
-        elif xlabel == "R/Rkr":
-            ticks = [0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0 + 1.0 / 3.0, 1.0 + 2.0 / 3.0, 2.0]
-            labels = ["2.5", "2.0", "1.5", "1.0", "1.5", "2.0", "2.5"]
-            self.ax.set_xlim(0.0, 2.0)
-            self.ax.set_xticks(ticks)
-            self.ax.set_xticklabels(labels)
-        if vlines is not None:
-            for x_line in np.asarray(vlines, dtype=float):
-                if np.isfinite(x_line):
-                    self.ax.axvline(x_line, color="#9ca3af", lw=0.8, ls="--", alpha=0.45, zorder=0)
-        self.ax.grid(True, alpha=0.35)
-        if series:
-            self.ax.legend()
-        self._apply_ax_theme()
-        self._apply_line_margins()
-        self.canvas.draw_idle()
-
-    # --- Consolidated and corrected draw_geometry implementation ---
-    def draw_upper_contour(
-            self, x_arr, y_arr, points=None, xlabel="x [mm]", ylabel="R [mm]",
-            line_label="nozzle contour", points_label="thermal points",
-            xlim=None, vlines=None, show_legend=False
-    ):
-        self.clear()
-        self._responsive_margins = True
-        x_arr = np.asarray(x_arr, dtype=float)
-        y_arr = np.asarray(y_arr, dtype=float)
-
-        if x_arr.size and y_arr.size:
-            self.ax.plot(x_arr, y_arr, color=self.fg_color, lw=2.0, label=line_label)
-            if xlim is not None:
-                self.ax.set_xlim(float(xlim[0]), float(xlim[1]))
-            else:
-                self.ax.set_xlim(float(np.nanmin(x_arr)), float(np.nanmax(x_arr)))
-            y_min = float(np.nanmin(y_arr))
-            y_max = float(np.nanmax(y_arr))
-            y_pad = max((y_max - y_min) * 0.08, y_max * 0.03, 1.0)
-            self.ax.set_ylim(max(0.0, y_min - y_pad), y_max + y_pad)
-
-        if vlines is not None:
-            for x_line in np.asarray(vlines, dtype=float):
-                if np.isfinite(x_line):
-                    self.ax.axvline(x_line, color="#9ca3af", lw=0.8, ls="--", alpha=0.45, zorder=0)
-
-        if points is not None:
-            px, py = points
-            px = np.asarray(px, dtype=float)
-            py = np.asarray(py, dtype=float)
-            if px.size and py.size:
-                self.ax.plot(px, py, "o", color="#ff4d4d", markersize=4.5, label=points_label)
-
-        self.ax.set_title(self.title)
-        self.ax.set_xlabel(xlabel)
-        self.ax.set_ylabel(ylabel)
-        self.ax.grid(True, alpha=0.35)
-        if show_legend and (x_arr.size or points is not None):
-            self.ax.legend()
-        self._apply_ax_theme()
-        self._apply_line_margins()
-        self.canvas.draw_idle()
-
-    def draw_geometry(self, model: Model, x, y, X, Y):
-        self.clear()
-        ax = self.ax
-
-        x = np.asarray(x, dtype=float)
-        y = np.asarray(y, dtype=float)
-
-        x1, x2, x3, x4, x5 = X[0], X[1], X[2], X[3], X[4]
-        y1, y2, y3, y4, y5 = Y[0], Y[1], Y[2], Y[3], Y[4]
-
-        ax.plot(x, y, color=self.fg_color, lw=1.5)
-        ax.plot(x, -y, color=self.fg_color, lw=1.5)
-        ax.plot([x5, x5], [y5, -y5], color=self.fg_color, lw=1.5)
-
-        font_size = 11;
-
-        def text_size_data(ax, text):
-            fig = ax.figure
-            tmp = ax.text(0, 0, text, fontsize=font_size)
-            fig.canvas.draw()
-            bbox = tmp.get_window_extent(
-                renderer=fig.canvas.get_renderer()
-            )
-            tmp.remove()
-            w_px = bbox.width
-            h_px = bbox.height
-            x0 = ax.transData.inverted().transform((0, 0))[0]
-            x1 = ax.transData.inverted().transform((w_px, 0))[0]
-            y0 = ax.transData.inverted().transform((0, 0))[1]
-            y1 = ax.transData.inverted().transform((0, h_px))[1]
-            return abs(x1 - x0), abs(y1 - y0)
-
-        def draw_v_dim(ax, x, y_bottom, y_top, text, loc="center"):
-            dy_text = 0;
-            w_text, h_text = text_size_data(ax, text)
-            if (w_text >= abs(y_top - y_bottom)):
-                dy_text = h_text + abs(y_top - y_bottom) / 2 + w_text / 2;
-                ax.plot([x, x], [y_bottom, y_top + h_text + w_text], color=self.fg_color, lw=0.7)
-
-            if loc == "center":    dx = 0;           dx_text = 0;
-            if loc == "left":      dx = 2 * h_text;  dx_text = dx;
-            if loc == "right":     dx = -2 * h_text; dx_text = dx;
-            ax.annotate(
-                "",
-                xy=(x + dx, y_top),
-                xytext=(x + dx, y_bottom),
-                arrowprops=dict(arrowstyle="<->", lw=1, color=self.fg_color)
-            )
-            ax.plot([x, x + dx], [y_top, y_top], color=self.fg_color, lw=0.7)
-            ax.plot([x, x + dx], [y_bottom, y_bottom], color=self.fg_color, lw=0.7)
-            ax.text(
-                x + dx_text,
-                (y_top + y_bottom) / 2 + dy_text,
-                text,
-                rotation=90,
-                va="center",
-                ha="right",
-                fontsize=font_size,
-                color=self.fg_color
-            )
-
-        def draw_h_dim(ax, x_left, x_right, y_left, y_right, y, text):
-            dx_text = 0
-            w_text, h_text = text_size_data(ax, text)
-            if (w_text >= abs(x_left - x_right)):
-                y = y + h_text * 2.5
-                dx_text = abs(x_left - x_right) / 2 + w_text / 2;
-                ax.plot([(x_left + x_right) / 2, x_right + w_text], [y, y], color=self.fg_color, lw=0.7)
-            ax.annotate(
-                "",
-                xy=(x_right, y),
-                xytext=(x_left, y),
-                arrowprops=dict(arrowstyle="<->", lw=1, color=self.fg_color)
-            )
-            ax.plot([x_left, x_left], [y_left, y], color=self.fg_color, lw=0.7)
-            ax.plot([x_right, x_right], [y_right, y], color=self.fg_color, lw=0.7)
-            ax.text(
-                (x_left + x_right) / 2 + dx_text,
-                y,
-                text,
-                va="bottom",
-                ha="center",
-                fontsize=font_size,
-                color=self.fg_color
-            )
-
-        w_text, h_text = text_size_data(ax, str(round(L_g, 2)))
-        y_dim1 = -max(y) - 2 * h_text
-        y_dim2 = y_dim1 - 2.5 * h_text
-
-        # Diameters.
-        draw_v_dim(ax, (x2 + x3) / 2, -y2, y2, "Ø " + str(round(D_k, 2)), loc="center")
-        draw_v_dim(ax, x4, -y4, y4, "Ø " + str(round(D_kr, 2)), loc="center")
-        draw_v_dim(ax, x5, -y5, y5, "Ø " + str(round(D_a, 2)), loc="left")
-
-        # Individual section lengths.
-        draw_h_dim(ax, x1, x2, y1, y2, y_dim1, round(L_g, 2))
-        draw_h_dim(ax, x2, x3, y2, y3, y_dim1, round(L_cy, 2))
-        draw_h_dim(ax, x3, x4, y3, y4, y_dim1, round(L_vh, 2))
-        draw_h_dim(ax, x4, x5, y4, y5, y_dim1, round(L_c, 2))
-        draw_h_dim(ax, x1, x5, y1, y5, y_dim2, round(L_dv, 2))
-
-        ax.set_aspect("equal", adjustable="box")
-        ax.axis("off")
-        ax.set_xlim(min(x) - h_text, max(x) + h_text * 3)
-        ax.set_ylim(y_dim2 - h_text, max(y) + h_text)
-
-        self.fig.tight_layout(pad=0)
-        self.fig.subplots_adjust(left=0.04, right=0.96, top=0.96, bottom=0.04)
-        self.canvas.draw_idle()
-
-
 # Common page wrapper that combines a plot, controls, and contextual information.
-class GraphPage(QWidget):
-    def __init__(self, title: str, button_text: str, show_info=False):
-        super().__init__()
-
-        self.setObjectName("graphPage")
-
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(12, 12, 12, 12)
-        self.layout.setSpacing(8)
-
-        self.plot = PlotWidget(title)
-        self.layout.addWidget(self.plot)
-
-        self.info_box = None
-        self.points_box = None
-        self.hover_label = None
-        self.search_value = None
-        self.search_param = None
-        self.btn_search_point = None
-        self.language = "en"
-
-        # =====================================================
-        # Geometry-page layout: plot and action button only.
-        # =====================================================
-        if not show_info:
-            bar = QHBoxLayout()
-            bar.setContentsMargins(0, 0, 0, 0)
-            bar.setSpacing(8)
-            self.layout.addLayout(bar)
-
-            self.btn_calc = QPushButton(button_text)
-            self.btn_calc.setMinimumHeight(30)
-            self.btn_calc.setCursor(Qt.PointingHandCursor)
-
-            bar.addWidget(self.btn_calc)
-            bar.addStretch(1)
-
-            return
-
-        # =====================================================
-        # Layout used by the Mach, temperature, and pressure pages.
-        # =====================================================
-        bar = QHBoxLayout()
-        bar.setContentsMargins(0, 0, 0, 0)
-        bar.setSpacing(8)
-        self.layout.addLayout(bar)
-
-        self.btn_calc = QPushButton(button_text)
-        self.btn_calc.setMinimumHeight(30)
-        self.btn_calc.setCursor(Qt.PointingHandCursor)
-        bar.addWidget(self.btn_calc)
-
-        self.hover_label = QLabel("x = -    |    R = -    |    value = -")
-        self.hover_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.hover_label.setMinimumHeight(28)
-        bar.addWidget(self.hover_label, 1)
-
-        self.search_value = QLineEdit()
-        self.search_value.setFixedWidth(110)
-        self.search_value.setMinimumHeight(28)
-        self.search_value.setPlaceholderText("value")
-        bar.addWidget(self.search_value)
-
-        self.search_param = QComboBox()
-        self.search_param.setFixedWidth(60)
-        self.search_param.setMinimumHeight(28)
-        self.search_param.addItems(["x", "M"])
-        bar.addWidget(self.search_param)
-
-        self.btn_search_point = QPushButton("⌕")
-        self.btn_search_point.setFixedSize(32, 28)
-        self.btn_search_point.setToolTip("Find the nearest point")
-        bar.addWidget(self.btn_search_point)
-
-        bottom = QHBoxLayout()
-        bottom.setContentsMargins(0, 0, 0, 0)
-        bottom.setSpacing(10)
-        self.layout.addLayout(bottom)
-
-        self.info_box = QTextEdit()
-        self.info_box.setReadOnly(True)
-        self.info_box.setMinimumHeight(90)
-        self.info_box.setMaximumHeight(120)
-        bottom.addWidget(self.info_box, 3)
-
-        self.points_box = QTextEdit()
-        self.points_box.setReadOnly(False)
-        self.points_box.setMinimumHeight(90)
-        self.points_box.setMaximumHeight(120)
-        bottom.addWidget(self.points_box, 2)
-
-        self.plot.hover_text_changed = self.hover_label.setText
-        self.plot.point_clicked = self.add_point_text
-        self.btn_search_point.clicked.connect(self.find_point_by_value)
-
-    def set_info(self, text):
-        if self.info_box is not None:
-            self.info_box.setPlainText(text)
-
-    def add_point_text(self, text):
-        if self.points_box is not None:
-            self.points_box.append(text)
-
-    def find_point_by_value(self):
-        if self.points_box is None:
-            return
-
-        if self.plot._hover_x is None or self.plot._hover_val is None:
-            self.points_box.append \
-                ("Нет данных для поиска." if self.language == "ru" else "No data available for search.")
-            return
-
-        try:
-            target = float(self.search_value.text().replace(",", "."))
-        except ValueError:
-            self.points_box.append("Введите числовое значение для поиска." if self.language == "ru"
-                                   else "Enter a numeric value to search for.")
-            return
-
-        x_arr = np.asarray(self.plot._hover_x, dtype=float)
-        y_arr = np.asarray(self.plot._hover_y, dtype=float)
-        val_arr = np.asarray(self.plot._hover_val, dtype=float)
-
-        param = self.search_param.currentText()
-
-        if param == "x":
-            idx = int(np.argmin(np.abs(x_arr - target)))
-        else:
-            idx = int(np.argmin(np.abs(val_arr - target)))
-
-        label = self.plot._hover_label if self.plot._hover_label else "value"
-        unit = self.plot._hover_unit if hasattr(self.plot, "_hover_unit") else ""
-        unit_s = f" {unit}" if unit else ""
-
-        text = (
-            f"x={x_arr[idx]:.3f} mm   |   "
-            f"R={y_arr[idx]:.3f} mm   |   "
-            f"{label}={val_arr[idx]:.6g}{unit_s}"
-        )
-
-        self.points_box.append(text)
-
-    def draw_fill(self, *args, **kwargs):
-        self.plot.draw_fill(*args, **kwargs)
-
-        if self.search_param is not None:
-            label = self.plot._hover_label if self.plot._hover_label else "value"
-            self.search_param.clear()
-            self.search_param.addItems(["x", label])
-
-    def draw_geometry(self, *args, **kwargs):
-        self.plot.draw_geometry(*args, **kwargs)
-
-
-class ThermalPage(QWidget):
-    # Presents thermal-analysis inputs, results, and tabular wall data.
-    def __init__(self):
-        super().__init__()
-        self.setObjectName("graphPage")
-
-        outer_layout = QVBoxLayout(self)
-        outer_layout.setContentsMargins(0, 0, 0, 0)
-        outer_layout.setSpacing(0)
-
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setFrameShape(QFrame.NoFrame)
-        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        outer_layout.addWidget(self.scroll_area)
-
-        self.scroll_content = QWidget()
-        self.scroll_content.setObjectName("graphPage")
-        self.scroll_area.setWidget(self.scroll_content)
-
-        layout = QVBoxLayout(self.scroll_content)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(16)
-
-        top = QHBoxLayout()
-        top.setContentsMargins(0, 0, 0, 0)
-        top.setSpacing(8)
-        layout.addLayout(top)
-
-        controls_widget = QWidget()
-        controls_widget.setMinimumWidth(300)
-        controls_widget.setMaximumWidth(300)
-        controls = QVBoxLayout(controls_widget)
-        controls.setContentsMargins(0, 0, 8, 0)
-        controls.setSpacing(8)
-
-        self.lbl_T_wall_material_max = QLabel("Maximum allowable combustion-wall material temperature")
-        self.lbl_T_wall_material_max.setWordWrap(True)
-        controls.addWidget(self.lbl_T_wall_material_max)
-
-        input_row = QHBoxLayout()
-        input_row.setContentsMargins(0, 0, 0, 0)
-        input_row.setSpacing(8)
-        controls.addLayout(input_row)
-
-        self.ed_T_wall_material_max = QLineEdit()
-        self.ed_T_wall_material_max.setFixedWidth(130)
-        self.ed_T_wall_material_max.setValidator(QDoubleValidator(0.0, 10000.0, 6, self))
-        input_row.addWidget(self.ed_T_wall_material_max)
-
-        self.lbl_T_unit = QLabel("K")
-        input_row.addWidget(self.lbl_T_unit)
-
-        self.btn_temperature_help = QPushButton("?")
-        self.btn_temperature_help.setObjectName("helpButton")
-        self.btn_temperature_help.setCursor(Qt.PointingHandCursor)
-        self.btn_temperature_help.setFixedSize(18, 18)
-        self.btn_temperature_help.clicked.connect(self._show_temperature_help)
-        input_row.addWidget(self.btn_temperature_help)
-        input_row.addStretch(1)
-
-        self.btn_calc = QPushButton("Calculate")
-        self.btn_calc.setFixedWidth(130)
-        self.btn_calc.setMinimumHeight(30)
-        self.btn_calc.setCursor(Qt.PointingHandCursor)
-        controls.addWidget(self.btn_calc)
-        controls.addStretch(1)
-        top.addWidget(controls_widget)
-
-        self.max_temperature_caption = "Maximum allowable combustion-wall material temperature"
-        self.gas_wall_temperature_caption = "Gas-wall temperature"
-        self.s_caption = "Thermodynamic coefficient"
-        self.q_caption = "Total thermal load"
-        self.temperature_unit = "K"
-        self.heat_load_unit = "W"
-        self.temperature_help_title = "Temperature input"
-        self.temperature_help_text = (
-            "Enter the maximum allowable temperature of the combustion-wall material in kelvins. "
-            "This value is used for the thermal-load calculation."
-        )
-        self.temperature_range_provider = None
-        self._last_max_temperature = None
-        self._last_gas_wall_temperature = None
-        self._last_s_value = None
-        self._last_q_value = None
-        self._last_table_frame = None
-        self._table_point_caption = "Point"
-        self._table_parameter_caption = "Parameter"
-        self._table_maximum_caption = "maximum total heat flux"
-        self._table_section_names = {
-            "convergent": "Convergent section",
-            "throat": "Throat",
-            "divergent": "Divergent section",
-        }
-        self._table_parameter_labels = {
-            "R/R_t [-]": "Relative radius R/R_t [-]",
-            "x [mm]": "Axial coordinate [mm]",
-            "q_k [W/m^2]": "Specific convective\nheat flux q_k [W/m²]",
-            "q_l [W/m^2]": "Specific radiative\nheat flux q_l [W/m²]",
-            "q_sum [W/m^2]": "Total specific\nheat flux q_sum [W/m²]",
-            "dA_wall [m^2]": "Wall-segment area [m²]",
-            "dQ [W]": "Heat load on segment [W]",
-            "Q_cum [W]": "Cumulative heat load [W]",
-        }
-
-        self.results_box = QTextEdit()
-        self.results_box.setReadOnly(True)
-        self.results_box.setAcceptRichText(False)
-        self.results_box.setMinimumHeight(120)
-        self.results_box.setMaximumHeight(120)
-        self.results_box.setLineWrapMode(QTextEdit.WidgetWidth)
-        top.addWidget(self.results_box, 1)
-        self._refresh_result_labels()
-
-        self.table = QTextEdit()
-        self.table.setReadOnly(True)
-        self.table.setMinimumHeight(280)
-        self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.table.setLineWrapMode(QTextEdit.NoWrap)
-        layout.addWidget(self.table)
-
-        self.plot = PlotWidget("Specific heat flux along the combustion wall")
-        self.plot.setMinimumHeight(340)
-        self.plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        layout.addWidget(self.plot)
-
-        self.contour_plot = PlotWidget("Nozzle contour")
-        self.contour_plot.setMinimumHeight(220)
-        self.contour_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        layout.addWidget(self.contour_plot)
-
-    def set_language(self, tr):
-        self.lbl_T_wall_material_max.setText(tr(
-            "Maximum allowable combustion-wall material temperature",
-            "Предельно допустимая температура материала огневой стенки"
-        ))
-        self.lbl_T_unit.setText(tr("K", "К"))
-        self.btn_temperature_help.setToolTip(tr("Input parameter help", "Справка о вводимом параметре"))
-        self.btn_calc.setText(tr("Calculate", "Рассчитать"))
-        self.contour_plot.title = tr(
-            "Nozzle contour",
-            "\u041a\u043e\u043d\u0442\u0443\u0440 \u0441\u043e\u043f\u043b\u0430"
-        )
-        self.plot.title = tr(
-            "Specific heat flux along the combustion wall",
-            "Удельный тепловой поток вдоль огневой стенки"
-        )
-        self.max_temperature_caption = tr(
-            "Maximum allowable combustion-wall material temperature",
-            "Предельно допустимая температура материала огневой стенки"
-        )
-        self.gas_wall_temperature_caption = tr("Gas-wall temperature", "Температура газовой стенки")
-        self.s_caption = tr("Thermodynamic coefficient", "Термодинамический коэффициент")
-        self.q_caption = tr("Total thermal load", "Суммарная тепловая нагрузка")
-        self.temperature_unit = tr("K", "К")
-        self.heat_load_unit = tr("W", "Вт")
-        self.temperature_help_title = tr("Temperature input", "Ввод температуры")
-        self.temperature_help_text = tr(
-            "Enter the maximum allowable temperature of the combustion-wall material in kelvins. "
-            "This value is used for the thermal-load calculation.",
-            "Введите предельно допустимую температуру материала огневой стенки в кельвинах. "
-            "Это значение используется при расчёте тепловых нагрузок."
-        )
-        self._table_point_caption = tr("Point", "Точка")
-        self._table_parameter_caption = tr("Parameter", "Параметр")
-        self._table_maximum_caption = tr(
-            "maximum total heat flux",
-            "максимальная суммарная плотность теплового потока"
-        )
-        self._table_section_names = {
-            "convergent": tr("Convergent section", "Сужающаяся часть"),
-            "throat": tr("Throat", "Критическое сечение"),
-            "divergent": tr("Divergent section", "Расширяющаяся часть"),
-        }
-        self._table_parameter_labels = {
-            "R/R_t [-]": tr("Relative radius R/R_t [-]", "Относительный радиус R/Rкр [-]"),
-            "x [mm]": tr("Axial coordinate [mm]", "Координата вдоль сопла [мм]"),
-            "q_k [W/m^2]": tr("Specific convective\nheat flux q_k [W/m²]", "Удельный конвективный\nтепловой поток q_k [Вт/м²]"),
-            "q_l [W/m^2]": tr("Specific radiative\nheat flux q_l [W/m²]", "Удельный лучистый\nтепловой поток q_l [Вт/м²]"),
-            "q_sum [W/m^2]": tr("Total specific\nheat flux q_sum [W/m²]", "Суммарный удельный\nтепловой поток q_sum [Вт/м²]"),
-            "dA_wall [m^2]": tr("Wall-segment area [m²]", "Площадь участка огневой стенки [м²]"),
-            "dQ [W]": tr("Heat load on segment [W]", "Тепловая нагрузка участка [Вт]"),
-            "Q_cum [W]": tr("Cumulative heat load [W]", "Накопленная тепловая нагрузка [Вт]"),
-        }
-        self._refresh_result_labels()
-        self._render_transposed_table()
-
-    def _show_temperature_help(self):
-        text = self.temperature_help_text
-        if callable(self.temperature_range_provider):
-            range_data = self.temperature_range_provider()
-            if range_data is not None:
-                pair_name, minimum, maximum = range_data
-                if self.temperature_unit == "К":
-                    text += (
-                        f"\n\nВыбранная топливная пара: {pair_name}."
-                        f"\nДоступный расчётный диапазон вводимой температуры: "
-                        f"{minimum:g}–{maximum:g} К."
-                    )
-                else:
-                    text += (
-                        f"\n\nSelected propellant pair: {pair_name}."
-                        f"\nAvailable calculation range for the input temperature: "
-                        f"{minimum:g}–{maximum:g} K."
-                    )
-            else:
-                text += (
-                    "\n\nДиапазон температур для выбранной топливной пары недоступен."
-                    if self.temperature_unit == "К" else
-                    "\n\nThe temperature range for the selected propellant pair is unavailable."
-                )
-        QMessageBox.information(self, self.temperature_help_title, text)
-
-    def _refresh_result_labels(self):
-        max_text = "-" if self._last_max_temperature is None else f"{self._last_max_temperature:.6g} {self.temperature_unit}"
-        gas_text = "-" if self._last_gas_wall_temperature is None else f"{self._last_gas_wall_temperature:.6g} {self.temperature_unit}"
-        s_text = "-" if self._last_s_value is None else f"{self._last_s_value:.6g}"
-        q_text = "-" if self._last_q_value is None else f"{self._last_q_value:.6g} {self.heat_load_unit}"
-        self.results_box.setPlainText("\n".join((
-            f"{self.max_temperature_caption}: {max_text}",
-            f"{self.gas_wall_temperature_caption}: {gas_text}",
-            f"{self.s_caption}: {s_text}",
-            f"{self.q_caption}: {q_text}",
-        )))
-
-    def set_results(self, T_gas_wall, S_gas_wall, Q_loss_W, frame):
-        try:
-            self._last_max_temperature = float(self.ed_T_wall_material_max.text().replace(",", "."))
-        except ValueError:
-            self._last_max_temperature = None
-        self._last_gas_wall_temperature = float(T_gas_wall)
-        self._last_s_value = float(S_gas_wall)
-        self._last_q_value = float(Q_loss_W)
-        self._refresh_result_labels()
-        self._last_table_frame = frame
-        self._render_transposed_table()
-
-    def _render_transposed_table(self):
-        frame = self._last_table_frame
-        if frame is None:
-            self.table.clear()
-            return
-
-        dark_mode = self.palette().color(QPalette.Base).lightness() < 128
-        if dark_mode:
-            table_bg = "#1E1E1E"
-            header_bg = "#2A2238"
-            label_bg = "#25212D"
-            cell_bg = "#1A1A1D"
-            max_bg = "#3D2C78"
-            border = "#4B3D63"
-            text = "#F4F4F4"
-            label_text = "#FFFFFF"
-            self.table.setStyleSheet(
-                "QTextEdit { background:#1E1E1E; color:#F4F4F4; "
-                "border:1px solid rgba(255,255,255,0.12); border-radius:9px; }"
-            )
-        else:
-            table_bg = "#ffffff"
-            header_bg = "#d9eef3"
-            label_bg = "#eef6f8"
-            cell_bg = "#ffffff"
-            max_bg = "#fff0b3"
-            border = "#777777"
-            text = "#111827"
-            label_text = "#111827"
-            self.table.setStyleSheet("")
-
-        columns = [name for name in self._table_parameter_labels if name in frame.columns]
-        point_count = len(frame.index)
-        maximum_index = None
-        total_column = "q_sum [W/m^2]"
-        if total_column in frame.columns and point_count:
-            try:
-                maximum_index = int(np.nanargmax(np.asarray(frame[total_column], dtype=float)))
-            except Exception:
-                maximum_index = None
-
-        def cell_style(point_index):
-            if point_index == maximum_index:
-                return f"background:{max_bg}; color:{text};"
-            return f"background:{cell_bg}; color:{text};"
-
-        header_cells = [
-            f"<th style='border:1px solid {border}; padding:5px 8px; background:{header_bg}; "
-            f"color:{label_text}; text-align:left; white-space:nowrap;'>" +
-            html.escape(self._table_parameter_caption) + "</th>"
-        ]
-        for point_index in range(point_count):
-            caption = f"{self._table_point_caption} {point_index + 1}"
-            if point_index == maximum_index:
-                caption += " ★"
-            header_cells.append(
-                "<th title='" + html.escape(self._table_maximum_caption if point_index == maximum_index else "") +
-                f"' style='border:1px solid {border}; padding:5px 8px; text-align:center; white-space:nowrap; " +
-                cell_style(point_index) + "'>" + html.escape(caption) + "</th>"
-            )
-
-        body_rows = []
-        for column_name in columns:
-            values = frame[column_name].tolist()
-            parameter_label = self._table_parameter_labels[column_name]
-            parameter_html = html.escape(parameter_label).replace("\n", "<br>")
-            cells = [
-                f"<td style='border:1px solid {border}; padding:4px 8px; background:{label_bg}; "
-                f"color:{label_text}; font-weight:600; white-space:normal; width:161px;'>" +
-                parameter_html + "</td>"
-            ]
-            for point_index, value in enumerate(values):
-                if isinstance(value, (int, float, np.number)):
-                    value_text = f"{float(value):.9g}"
-                else:
-                    value_text = str(value)
-                cells.append(
-                    f"<td style='border:1px solid {border}; padding:4px 8px; text-align:right; "
-                    "white-space:nowrap; " + cell_style(point_index) + "'>" +
-                    html.escape(value_text) + "</td>"
-                )
-            body_rows.append("<tr>" + "".join(cells) + "</tr>")
-
-        self.table.setHtml(
-            f"<body style='background:{table_bg}; color:{text}; margin:0;'>"
-            f"<div style='background:{table_bg}; color:{text}; padding:4px;'>"
-            f"<table cellspacing='0' cellpadding='0' style='border-collapse:collapse; background:{table_bg}; color:{text};'>" +
-            "<thead><tr>" + "".join(header_cells) + "</tr></thead><tbody>" +
-            "".join(body_rows) + "</tbody></table></div></body>"
-        )
-        self.table.document().adjustSize()
-        table_width = int(np.ceil(self.table.document().idealWidth())) + 30
-        self.table.document().setTextWidth(table_width)
-        self.table.document().adjustSize()
-        table_height = int(np.ceil(self.table.document().size().height())) + 24
-        self.table.setMinimumWidth(max(900, table_width))
-        self.table.setMinimumHeight(max(280, table_height))
-        self.table.setMaximumHeight(max(280, table_height))
-
-    def clear_results(self):
-        self._last_max_temperature = None
-        self._last_gas_wall_temperature = None
-        self._last_s_value = None
-        self._last_q_value = None
-        self._last_table_frame = None
-        self._refresh_result_labels()
-        self.table.clear()
-        self.plot.clear()
-        self.contour_plot.clear()
-
-    def _rows_to_html(self, rows):
-        headers = [
-            "R_ratio_geometry [-]",
-            "position [-]",
-            "q0_recognized [W/m^2]",
-            "q_conv [W/m^2]",
-            "q_rad [W/m^2]",
-            "q_sum [W/m^2]",
-            "dQ [W]",
-            "Q_cum [W]",
-        ]
-        html_rows = [
-            "<tr>" + "".join(
-                f"<th style='border:1px solid #555; padding:4px; background:#d9eef3;'>{html.escape(h)}</th>"
-                for h in headers
-            ) + "</tr>"
-        ]
-        for row in rows:
-            values = [
-                f"{row.get('required_R_ratio', row['R_ratio_geometry']):.1f}",
-                row["position"],
-                f"{row['q0_recognized_W_m2']:.6g}",
-                f"{row['q_k_W_m2']:.6g}",
-                f"{row['q_l_W_m2']:.6g}",
-                f"{row['q_sum_W_m2']:.6g}",
-                f"{row['Q_loss_segment_W']:.6g}",
-                f"{row['Q_loss_cumulative_W']:.6g}",
-            ]
-            html_rows.append(
-                "<tr>" + "".join(
-                    f"<td style='border:1px solid #555; padding:4px;'>{html.escape(str(v))}</td>"
-                    for v in values
-                ) + "</tr>"
-            )
-        return (
-                "<div style='font-family:Segoe UI, Arial; font-size:12px;'>"
-                "<table style='border-collapse:collapse; width:100%;'>"
-                + "".join(html_rows) +
-                "</table></div>"
-        )
-
-
-# Run the expensive Mach-number calculation outside the GUI thread.
-class MWorker(QtCore.QObject):
-    progressed = QtCore.pyqtSignal(int)
-    finished = QtCore.pyqtSignal(object)
-    failed = QtCore.pyqtSignal(str)
-
-    def __init__(self, y_arr):
-        super().__init__()
-        self._y = np.asarray(y_arr, dtype=float)
-
-    @QtCore.pyqtSlot()
-    def run(self):
-        try:
-            def cb(p):
-                self.progressed.emit(int(p))
-
-            M = funM(self._y, progress_cb=cb)
-            self.finished.emit(np.asarray(M, dtype=float))
-        except Exception as e:
-            self.failed.emit(str(e))
-
-
 # Main application window: coordinates user input, calculations, plots, and exports.
 class Window(QMainWindow):
     def __init__(self):
@@ -1579,6 +91,7 @@ class Window(QMainWindow):
 
         self.setWindowTitle("LRE Nozzle Designer")
         self.model = Model()
+        self.geometry_state = GeometryState()
         self._language = "en"
         self._last_report_args = None
 
@@ -2014,12 +527,16 @@ class Window(QMainWindow):
         mainGrid.setColumnStretch(1, 1)
 
         # ===== Plot pages =====
-        self.page_geom = GraphPage("Nozzle geometry", "Draw the nozzle", show_info=False)
+        self.page_geom = GraphPage("Nozzle geometry", "Draw the nozzle", show_info=False,
+                                   geometry_state=self.geometry_state)
 
-        self.page_M = GraphPage("Mach number along the nozzle M(x)", "Calculate Mach number", show_info=True)
-        self.page_T = GraphPage("Static temperature along the nozzle T(x) [K]", "Calculate temperature", show_info=True)
-        self.page_P = GraphPage("Static pressure along the nozzle p(x) [MPa]", "Calculate pressure", show_info=True)
-        self.page_thermal = ThermalPage()
+        self.page_M = GraphPage("Mach number along the nozzle M(x)", "Calculate Mach number", show_info=True,
+                                geometry_state=self.geometry_state)
+        self.page_T = GraphPage("Static temperature along the nozzle T(x) [K]", "Calculate temperature", show_info=True,
+                                geometry_state=self.geometry_state)
+        self.page_P = GraphPage("Static pressure along the nozzle p(x) [MPa]", "Calculate pressure", show_info=True,
+                                geometry_state=self.geometry_state)
+        self.page_thermal = ThermalPage(self.geometry_state)
         self.page_thermal.temperature_range_provider = self._thermal_temperature_input_range
 
         self.page_geom.btn_calc.clicked.connect(self.on_draw_geom)
@@ -2335,288 +852,8 @@ class Window(QMainWindow):
         )
 
     def open_fuel_params_dialog(self):
-        dlg = QDialog(self)
-        dlg.setWindowTitle(self._tr("Propellant Pair Parameters", "Параметры топливной пары"))
-        dlg.setModal(False)
+        open_fuel_parameters_dialog(self)
 
-        main = QHBoxLayout(dlg)
-        main.setContentsMargins(8, 8, 12, 12)
-        main.setSpacing(22)
-
-        # ===== LEFT SIDE: propellant-pair list =====
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(6)
-
-        top_left = QHBoxLayout()
-        top_left.setSpacing(6)
-
-        self.ed_selected_fuel_name = QLineEdit()
-        self.ed_selected_fuel_name.setReadOnly(True)
-        self.ed_selected_fuel_name.setMinimumHeight(26)
-
-        # self.btn_edit_fuel = QPushButton("✎")
-        self.btn_edit_fuel = QPushButton()
-        self.btn_edit_fuel.setFixedSize(26, 26)
-
-        self.icon_edit_normal = QIcon("editing-pencil 0.png")
-        self.icon_edit_hover = QIcon("editing-pencil.png")
-        import os
-
-        print("Launch directory:", os.getcwd())
-        print("normal exists:", os.path.exists("editing-pencil 0.png"))
-        print("hover exists:", os.path.exists("editing-pencil.png"))
-        print("normal isNull:", self.icon_edit_normal.isNull())
-        print("hover isNull:", self.icon_edit_hover.isNull())
-
-        self.btn_edit_fuel.setIcon(self.icon_edit_normal)
-        self.btn_edit_fuel.setIconSize(QSize(17, 17))
-
-        self.btn_edit_fuel.setStyleSheet("""
-            QPushButton {
-                border-radius: 13px;
-                border: 1px solid transparent;
-                background-color: transparent;
-                padding: 0px;
-            }
-
-            QPushButton:hover {
-                border: 1px solid transparent;
-                background-color: transparent;
-            }
-
-            QPushButton:pressed {
-                border: 1px solid #6200EE;
-                background-color: transparent;
-            }
-        """)
-
-        self.btn_edit_fuel.installEventFilter(self)
-
-        self.btn_delete_fuel = QPushButton()
-        self.btn_delete_fuel.setFixedSize(26, 26)
-
-        self.icon_delete_normal = QIcon("delete 0.png")
-        self.icon_delete_hover = QIcon("delete.png")
-
-        self.btn_delete_fuel.setIcon(self.icon_delete_normal)
-        self.btn_delete_fuel.setIconSize(QSize(17, 17))
-
-        self.btn_delete_fuel.setStyleSheet("""
-            QPushButton {
-                border-radius: 13px;
-                border: 1px solid transparent;
-                background-color: transparent;
-                padding: 0px;
-            }
-
-            QPushButton:hover {
-                border: 1px solid transparent;
-                background-color: transparent;
-            }
-
-            QPushButton:pressed {
-                border: 1px solid #c0392b;
-                background-color: transparent;
-            }
-        """)
-
-        self.btn_delete_fuel.installEventFilter(self)
-
-        top_left.addWidget(self.ed_selected_fuel_name)
-        top_left.addWidget(self.btn_edit_fuel)
-        top_left.addWidget(self.btn_delete_fuel)
-
-        self.list_fuels = QListWidget()
-        self.list_fuels.setMinimumWidth(400)
-        self.list_fuels.setMinimumHeight(270)
-
-        for fuel_idx in range(1, len(PARA)):
-            self.list_fuels.addItem(self._fuel_name(fuel_idx))
-
-        left_layout.addLayout(top_left)
-        left_layout.addWidget(self.list_fuels)
-
-        main.addWidget(left)
-
-        # ===== RIGHT SIDE: parameters of the selected pair =====
-        right = QWidget()
-        right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(10)
-
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(14)
-        grid.setVerticalSpacing(10)
-
-        self.ed_fuel_name = QLineEdit()
-        self.ed_fuel_name.setMinimumHeight(28)
-        self.ed_fuel_name.setFixedWidth(315)
-
-        self._fuel_dialog_labels = []
-
-        def add_dialog_row(r, english, russian, widget):
-            lbl = QLabel(self._tr(english, russian))
-            lbl.setWordWrap(True)
-            lbl.setMinimumHeight(34)
-            grid.addWidget(lbl, r, 0, alignment=Qt.AlignLeft | Qt.AlignVCenter)
-            grid.addWidget(widget, r, 1, alignment=Qt.AlignLeft | Qt.AlignVCenter)
-            self._fuel_dialog_labels.append((lbl, english, russian))
-
-        row = 0
-        add_dialog_row(row, "Propellant pair name", "Название топливной пары", self.ed_fuel_name)
-        row += 1
-
-        add_dialog_row(row, "Propellant mass ratio K_m", "Массовое соотношение компонентов K_m", self.ed_k_m)
-        row += 1
-
-        add_dialog_row(row, "Specific gas constant R_g", "Удельная газовая постоянная R_g", self.ed_R)
-        row += 1
-
-        add_dialog_row(row, "Specific heat ratio gamma", "Показатель адиабаты γ", self.ed_k)
-        row += 1
-
-        add_dialog_row(row, "Reference combustion temperature T_ref", "Опорная температура горения T_ref", self.ed_Tst)
-        row += 1
-
-        add_dialog_row(row, "Reference specific impulse J_ref", "Опорный удельный импульс J_ref", self.ed_Jst)
-        row += 1
-
-        right_layout.addLayout(grid)
-
-        buttons = QHBoxLayout()
-        buttons.addStretch(1)
-
-        self.btn_save_fuel_params = QPushButton(self._tr("Save", "Сохранить"))
-        self.btn_save_fuel_params.setMinimumWidth(90)
-
-        self.btn_close_fuel_params = QPushButton(self._tr("Close", "Закрыть"))
-        self.btn_close_fuel_params.setMinimumWidth(90)
-        self.btn_close_fuel_params.clicked.connect(dlg.close)
-
-        buttons.addWidget(self.btn_save_fuel_params)
-        buttons.addWidget(self.btn_close_fuel_params)
-
-        right_layout.addLayout(buttons)
-
-        main.addWidget(right)
-
-        # ===== Dialog behavior =====
-        def load_fuel_from_list(row_idx):
-            if row_idx < 0:
-                return
-
-            fuel_idx = row_idx + 1
-
-            self.ed_selected_fuel_name.setText(self._fuel_name(fuel_idx))
-            self.ed_fuel_name.setText(self._fuel_name(fuel_idx))
-
-            self.ed_k_m.setText("" if k_m_list[fuel_idx] is None else f"{k_m_list[fuel_idx]:.6g}")
-            self.ed_R.setText("" if R_st_list[fuel_idx] is None else f"{R_st_list[fuel_idx]:.6g}")
-            self.ed_k.setText("" if k_st_list[fuel_idx] is None else f"{k_st_list[fuel_idx]:.6g}")
-            self.ed_Tst.setText("" if T_st_list[fuel_idx] is None else f"{T_st_list[fuel_idx]:.6g}")
-            self.ed_Jst.setText("" if J_st_list[fuel_idx] is None else f"{J_st_list[fuel_idx]:.6g}")
-
-        def save_current_fuel():
-            row_idx = self.list_fuels.currentRow()
-            if row_idx < 0:
-                return
-
-            fuel_idx = row_idx + 1
-            name = self.ed_fuel_name.text().strip()
-
-            if not name:
-                QMessageBox.warning(self, self._tr("Error", "Ошибка"),
-                                    self._tr("Enter a propellant pair name.", "Введите название топливной пары."))
-                return
-
-            try:
-                km = float(self.ed_k_m.text().replace(",", "."))
-                R = float(self.ed_R.text().replace(",", "."))
-                k = float(self.ed_k.text().replace(",", "."))
-                Tst = float(self.ed_Tst.text().replace(",", "."))
-                Jst = float(self.ed_Jst.text().replace(",", "."))
-            except Exception:
-                QMessageBox.warning(self, self._tr("Error", "Ошибка"),
-                                    self._tr("Check the numeric propellant parameters.",
-                                             "Проверьте числовые параметры топлива."))
-                return
-
-            PARA[fuel_idx] = name
-            PARA_DEFAULT[fuel_idx] = name
-            PARA_RU[fuel_idx] = name
-            k_m_list[fuel_idx] = km
-            R_st_list[fuel_idx] = R
-            k_st_list[fuel_idx] = k
-            T_st_list[fuel_idx] = Tst
-            J_st_list[fuel_idx] = Jst
-
-            self.list_fuels.item(row_idx).setText(name)
-            self.ed_selected_fuel_name.setText(name)
-
-            self.cbFuel.setItemText(row_idx, name)
-            self.cbFuel.setCurrentIndex(row_idx)
-
-            self.on_change()
-            self.timer.start()
-
-        def edit_fuel_name():
-            self.ed_fuel_name.setFocus()
-            self.ed_fuel_name.selectAll()
-
-        def delete_current_fuel():
-            row_idx = self.list_fuels.currentRow()
-            if row_idx < 0:
-                return
-
-            fuel_idx = row_idx + 1
-
-            reply = QMessageBox.question(
-                self,
-                self._tr("Delete", "Удаление"),
-                self._tr("Delete the selected propellant pair?", "Удалить выбранную топливную пару?"),
-                QMessageBox.Yes | QMessageBox.No
-            )
-
-            if reply != QMessageBox.Yes:
-                return
-
-            del PARA[fuel_idx]
-            del PARA_DEFAULT[fuel_idx]
-            del PARA_RU[fuel_idx]
-            del k_m_list[fuel_idx]
-            del R_st_list[fuel_idx]
-            del k_st_list[fuel_idx]
-            del T_st_list[fuel_idx]
-            del J_st_list[fuel_idx]
-
-            self.list_fuels.takeItem(row_idx)
-
-            self.cbFuel.clear()
-            for i, name in enumerate(PARA[1:], start=1):
-                self.cbFuel.addItem(self._fuel_name(i), i)
-
-            if self.list_fuels.count() > 0:
-                new_row = min(row_idx, self.list_fuels.count() - 1)
-                self.list_fuels.setCurrentRow(new_row)
-                self.cbFuel.setCurrentIndex(new_row)
-
-            self.on_change()
-            self.timer.start()
-
-        self.list_fuels.currentRowChanged.connect(load_fuel_from_list)
-        self.btn_save_fuel_params.clicked.connect(save_current_fuel)
-        self.btn_edit_fuel.clicked.connect(edit_fuel_name)
-        self.btn_delete_fuel.clicked.connect(delete_current_fuel)
-
-        current_row = self.cbFuel.currentIndex()
-        self.list_fuels.setCurrentRow(current_row)
-
-        dlg.resize(760, 360)
-        dlg.show()
-
-        self._fuel_params_dialog = dlg
 
     def eventFilter(self, obj, event):
         # ===== 1. Edit-propellant-pair button =====
@@ -2845,335 +1082,11 @@ class Window(QMainWindow):
         self._update_theme_button(mode)
 
     def _apply_palette(self, mode: str):
-        """Configure the palette and styles for light or dark mode."""
-        app = QApplication.instance()
-        app.setStyle("Fusion")
-
-        if mode == "dark":
-            pal = QPalette()
-            pal.setColor(QPalette.Window, QColor("#121212"))
-            pal.setColor(QPalette.WindowText, QColor("#FFFFFF"))
-            pal.setColor(QPalette.Base, QColor("#1E1E1E"))
-            pal.setColor(QPalette.AlternateBase, QColor("#242424"))
-            pal.setColor(QPalette.ToolTipBase, QColor("#FFFFFF"))
-            pal.setColor(QPalette.ToolTipText, QColor("#121212"))
-            pal.setColor(QPalette.Text, QColor("#FFFFFF"))
-            pal.setColor(QPalette.Button, QColor("#1F1F1F"))
-            pal.setColor(QPalette.ButtonText, QColor("#FFFFFF"))
-            pal.setColor(QPalette.BrightText, QColor("#FF80AB"))
-            pal.setColor(QPalette.Highlight, QColor("#BB86FC"))
-            pal.setColor(QPalette.HighlightedText, QColor("#000000"))
-
-            side_bg = "#181818"
-            center_bg = "#121212"
-            panel_bg = "#1E1E1E"
-            report_bg = "#181818"
-            border_col = "rgba(255,255,255,0.12)"
-            field_border = "rgba(255,255,255,0.22)"
-            field_focus = "#BB86FC"
-
-            nav_hover = "rgba(255,255,255,0.12)"
-            nav_checked = "rgba(187,134,252,0.30)"
-
-            primary_btn_bg = "#BB86FC"
-            primary_btn_fg = "#000000"
-
-            theme_border = "#BB86FC"
-            theme_bg = "#1F1F1F"
-            theme_fg = "#EDE7F6"
-
-            # Apply these four colors together with the shared text color.
-            hover_bg = "#3D2C78"
-            hover_fg = "#FFFFFF"
-            select_bg = "#BB86FC"
-            select_fg = "#000000"
-            text_col = "#FFFFFF"
-            required_bg = "rgba(187,134,252,0.10)"
-            required_border = "rgba(187,134,252,0.55)"
-        else:
-            pal = QPalette()
-            pal.setColor(QPalette.Window, QColor("#F2F2F2"))
-            pal.setColor(QPalette.WindowText, QColor("#1F1F1F"))
-            pal.setColor(QPalette.Base, QColor("#FFFFFF"))
-            pal.setColor(QPalette.AlternateBase, QColor("#F5F5F5"))
-            pal.setColor(QPalette.ToolTipBase, QColor("#FFFFFF"))
-            pal.setColor(QPalette.ToolTipText, QColor("#1F1F1F"))
-            pal.setColor(QPalette.Text, QColor("#1F1F1F"))
-            pal.setColor(QPalette.Button, QColor("#FAFAFA"))
-            pal.setColor(QPalette.ButtonText, QColor("#1F1F1F"))
-            pal.setColor(QPalette.BrightText, QColor("#D32F2F"))
-            pal.setColor(QPalette.Highlight, QColor("#6200EE"))
-            pal.setColor(QPalette.HighlightedText, QColor("#FFFFFF"))
-
-            side_bg = "#6200EE"
-            center_bg = "#F2F2F2"
-            panel_bg = "#FFFFFF"
-            report_bg = "#FFFFFF"
-            border_col = "rgba(0,0,0,0.10)"
-            field_border = "rgba(0,0,0,0.16)"
-            field_focus = "#6200EE"
-
-            nav_hover = "rgba(255,255,255,0.20)"
-            nav_checked = "rgba(255,255,255,0.32)"
-
-            primary_btn_bg = "#6200EE"
-            primary_btn_fg = "#FFFFFF"
-
-            theme_border = "#7C4DFF"
-            theme_bg = "#EDE7F6"
-            theme_fg = "#311B92"
-
-            # Colors for drop-down lists in the light theme.
-            hover_bg = "#E8DDFF"
-            hover_fg = "#311B92"
-            select_bg = "#6200EE"
-            select_fg = "#FFFFFF"
-            text_col = "#1F1F1F"
-            required_bg = "#F7F2FF"
-            required_border = "rgba(98,0,238,0.35)"
-
-        app.setPalette(pal)
-
-        base_styles = f"""
-            #side {{
-                background:{side_bg};
-                color:#fff;
-                border-radius:16px;
-            }}
-            #side QPushButton {{
-                background:transparent;
-                color:#EDE7F6;
-                text-align:left;
-                padding:8px 14px;
-                border:none;
-                border-radius:10px;
-                font-size:16px;
-            }}
-            #side QPushButton:hover {{
-                background:{nav_hover};
-            }}
-            #side QPushButton:checked {{
-                background:{nav_checked};
-                color:#FFFFFF;
-            }}
-
-            #centerPanel {{
-                background:{center_bg};
-                border-radius:16px;
-                border: 1px solid {border_col};
-            }}
-
-            #inputPanel {{
-                border-radius:14px;
-                background:{panel_bg};
-                padding: 50px;
-            }}
-
-            QScrollArea QWidget#inputPanel {{
-                padding: 18px;
-            }}
-
-            QFrame#requiredInputsFrame {{
-                border: 1px solid {required_border};
-                border-radius: 14px;
-                background: {required_bg};
-            }}
-
-            QLabel#requiredInputsTitle {{
-                font-weight: 700;
-                color: {field_focus};
-            }}
-
-            #graphPage {{
-                border-radius:14px;
-                background:{panel_bg};
-            }}
-
-            #reportBox {{
-                border-radius:12px;
-                border:1px solid {border_col};
-                background:{report_bg};
-                padding:6px;
-            }}
-
-            * {{ outline: 0; }}
-            QToolBar {{
-                border: none;
-                padding: 4px 8px;
-                background: transparent;
-            }}
-            QToolBar QToolButton {{
-                padding: 6px 10px;
-                border-radius: 8px;
-            }}
-            QToolBar QToolButton:hover {{
-                background: rgba(127,127,127,0.15);
-            }}
-            QToolBar QLabel {{ font-weight: 600; }}
-
-            QPushButton {{
-                border: 1px solid {field_border};
-                padding: 6px 12px;
-                border-radius: 10px;
-                background: palette(Button);
-            }}
-            QPushButton:hover {{
-                border-color: {field_focus};
-            }}
-            QPushButton:disabled {{
-                opacity: .6;
-            }}
-
-            QPushButton#helpButton {{
-                border: 1px solid #8A8A8A;
-                border-radius: 8px;
-                padding: 0px;
-                font-weight: 700;
-                font-size: 10px;
-                color: #8A8A8A;
-                background: transparent;
-            }}
-            QPushButton#helpButton:hover {{
-                background: {hover_bg};
-                color: {hover_fg};
-            }}
-
-            /* Основная фиолетовая кнопка (если задашь objectName="primaryButton") */
-            QPushButton#primaryButton {{
-                background: {primary_btn_bg};
-                color: {primary_btn_fg};
-                border: none;
-                font-weight: 600;
-            }}
-            QPushButton#primaryButton:hover {{
-                background: {primary_btn_bg};
-                filter: brightness(1.05);
-            }}
-
-            QLineEdit, QComboBox, QTextEdit {{
-                border: 1px solid {field_border};
-                border-radius: 9px;
-                padding: 4px 8px;
-                background: palette(Base);
-            }}
-            QLineEdit:focus, QComboBox:focus, QTextEdit:focus {{
-                border: 1px solid {field_focus};
-            }}
-
-            QStatusBar {{
-                padding: 2px 8px;
-            }}
-
-            QProgressBar {{
-                border-radius: 7px;
-                text-align: center;
-                font-size: 12px;
-                background: rgba(0,0,0,0.08);
-            }}
-            QProgressBar::chunk {{
-                border-radius: 6px;
-                background: palette(Highlight);
-            }}
-
-            /* popup QComboBox */
-            QComboBox QAbstractItemView {{
-                background: {panel_bg};
-                color: {text_col};
-            }}
-
-
-
-            /* Цветные скроллбары с фиолетовым ползунком */
-            QScrollBar:vertical {{
-                background: transparent;
-                width: 10px;
-                margin: 4px 0 4px 0;
-            }}
-            QScrollBar::handle:vertical {{
-                background: {field_focus};
-                min-height: 20px;
-                border-radius: 5px;
-            }}
-            QScrollBar::add-line:vertical,
-            QScrollBar::sub-line:vertical {{
-                height: 0;
-                background: transparent;
-            }}
-
-            #themeToggle, #languageToggle {{
-                border-radius: 14px;
-                border: 2px solid {theme_border};
-                padding: 0 10px;
-                font-size: 13px;
-                font-weight: 600;
-                background-color: {theme_bg};
-                color: {theme_fg};
-            }}
-            #themeToggle:hover, #languageToggle:hover {{
-                border-color: {field_focus};
-            }}
-            #themeToggle:checked {{
-                background-color: {"#121212" if mode == "dark" else "#6200EE"};
-                color: {"#BB86FC" if mode == "dark" else "#FFFFFF"};
-                border-color: {field_focus};
-            }}
-
-            #winMin, #winClose, #winMax {{
-                border: none;
-                border-radius: 0;
-                padding: 0;
-                margin: 0;
-                background: transparent;
-            }}
-            #winMin:hover, #winMax:hover {{
-                background: rgba(255,255,255,0.10);
-            }}
-            #winClose:hover {{
-                background: #e81123;
-                color: white;
-            }}
-        """
-
-        self.setStyleSheet(base_styles)
-
-        # Apply the same theme to the Matplotlib plots.
-        if hasattr(self, "page_geom"):
-            try:
-                self._set_plot_theme(mode)
-            except Exception:
-                pass
-        if hasattr(self, "lbl_nozzle_status"):
-            self._update_nozzle_status()
+        apply_window_palette(self, mode)
 
     def _crop_curve_by_x_range(self, x_arr, y_arr, x_min, x_max):
-        x_arr = np.asarray(x_arr, dtype=float)
-        y_arr = np.asarray(y_arr, dtype=float)
-        mask = np.isfinite(x_arr) & np.isfinite(y_arr)
-        x_arr = x_arr[mask]
-        y_arr = y_arr[mask]
-        if x_arr.size == 0 or y_arr.size == 0:
-            return x_arr, y_arr
+        return crop_curve_by_x_range(x_arr, y_arr, x_min, x_max)
 
-        order = np.argsort(x_arr)
-        x_arr = x_arr[order]
-        y_arr = y_arr[order]
-        x_min, x_max = sorted((float(x_min), float(x_max)))
-        x_min = max(x_min, float(x_arr[0]))
-        x_max = min(x_max, float(x_arr[-1]))
-
-        inner = (x_arr >= x_min) & (x_arr <= x_max)
-        x_crop = x_arr[inner]
-        y_crop = y_arr[inner]
-
-        y_left = float(np.interp(x_min, x_arr, y_arr))
-        y_right = float(np.interp(x_max, x_arr, y_arr))
-        if x_crop.size == 0 or not np.isclose(x_crop[0], x_min):
-            x_crop = np.insert(x_crop, 0, x_min)
-            y_crop = np.insert(y_crop, 0, y_left)
-        if x_crop.size == 0 or not np.isclose(x_crop[-1], x_max):
-            x_crop = np.append(x_crop, x_max)
-            y_crop = np.append(y_crop, y_right)
-        return x_crop, y_crop
 
     def _set_plot_theme(self, mode: str):
         """Apply the theme mode to every PlotWidget and redraw the graphs."""
@@ -3704,7 +1617,7 @@ class Window(QMainWindow):
         self._update_nozzle_status()
 
         try:
-            self._build_globals_from_model()
+            self._sync_geometry_state_from_model()
             x, y, X, Y = self.model.take_x_y()
             self.x_curve, self.y_curve = np.asarray(x, float), np.asarray(y, float)
         except Exception as e:
@@ -3935,21 +1848,9 @@ class Window(QMainWindow):
         self.txtParams.setLineWrapMode(QTextEdit.WidgetWidth)
         self.txtParams.setHtml(html)
 
-    def _build_globals_from_model(self):
+    def _sync_geometry_state_from_model(self):
         # Prepare contour data required by the asynchronous Mach-number calculation.
-        global a1, a2, alpha1, alpha2
-        global D_k, D_kr, D_a, R_k, R_kr, R_a, R3
-        global L_g, L_cy, L_vh, L_c, L_dv
-        global x
-        a1, a2 = self.model.a1, self.model.a2
-        alpha1, alpha2 = self.model.alpha1, self.model.alpha2
-        D_k, D_kr, D_a = float(self.model.D_k), float(self.model.D_kr), float(self.model.D_a)
-        R_k, R_kr, R_a = float(self.model.R_k), float(self.model.R_kr), float(self.model.R_a)
-        R3 = float(self.model.R3)
-        L_g, L_cy = float(self.model.L_g), float(self.model.L_cy)
-        L_vh, L_c = float(self.model.L_vh), float(self.model.L_c)
-        L_dv = float(self.model.L_dv)
-        x = None
+        self.geometry_state.update_from_model(self.model)
 
     # ---------- Mach-number controls ----------
     def on_calc_M(self):
@@ -3960,19 +1861,18 @@ class Window(QMainWindow):
                                              "Сначала нажмите «Рассчитать параметры»."))
             return
 
-        global x, k, R_kr, L_g, L_cy
-        x = np.asarray(self.x_curve, dtype=float)
-        k = float(self.model.k)
-        R_kr = float(self.model.R_kr)
-        L_g = float(self.model.L_g)
-        L_cy = float(self.model.L_cy)
+        self.geometry_state.x = np.asarray(self.x_curve, dtype=float)
+        self.geometry_state.k = float(self.model.k)
+        self.geometry_state.R_kr = float(self.model.R_kr)
+        self.geometry_state.L_g = float(self.model.L_g)
+        self.geometry_state.L_cy = float(self.model.L_cy)
 
         self.progressBar.setValue(0)
         self.progressBar.setVisible(True)
         self.page_M.btn_calc.setEnabled(False)
 
         self._m_thread = QtCore.QThread(self)
-        self._m_worker = MWorker(self.y_curve)
+        self._m_worker = MWorker(self.y_curve, self.geometry_state)
         self._m_worker.moveToThread(self._m_thread)
         self._m_thread.started.connect(self._m_worker.run)
         self._m_worker.progressed.connect(self.on_m_progress)
@@ -4190,86 +2090,21 @@ class Window(QMainWindow):
             return None
 
     def _thermal_median(self, values):
-        values = sorted(float(v) for v in values)
-        if not values:
-            raise ValueError("empty median")
-        mid = len(values) // 2
-        if len(values) % 2:
-            return values[mid]
-        return 0.5 * (values[mid - 1] + values[mid])
+        return median(values)
+
 
     def _thermal_local_slope(self, rows, side, n_points=4):
-        edge_rows = rows[:min(n_points, len(rows))] if side == "lower" else rows[-min(n_points, len(rows)):]
-        slopes = []
-        steps = []
-        for i in range(len(edge_rows) - 1):
-            T1, T2 = edge_rows[i]["T"], edge_rows[i + 1]["T"]
-            S1, S2 = edge_rows[i]["S"], edge_rows[i + 1]["S"]
-            dT = T2 - T1
-            if abs(dT) > 1e-12:
-                slopes.append((S2 - S1) / dT)
-                steps.append(abs(dT))
-        if not slopes:
-            raise ValueError("not enough S points for extrapolation")
-        return self._thermal_median(slopes), sum(steps) / len(steps)
+        return local_slope(rows, side, n_points)
+
 
     def _thermal_interpolate_s(self, rows, target_temperature):
-        rows = sorted(rows, key=lambda row: row["T"])
-        if len(rows) < 2:
-            pair_name = self.cbFuel.currentText().strip()
-            raise ValueError(self._tr(
-                f"Thermal-load calculation is unavailable for the propellant pair “{pair_name}”: "
-                "the required thermodynamic-coefficient data are missing.",
-                f"Расчёт тепловых нагрузок недоступен для топливной пары «{pair_name}»: "
-                "отсутствуют необходимые данные термодинамического коэффициента."
-            ))
+        return interpolate_s(
+            rows,
+            target_temperature,
+            self._tr,
+            self.cbFuel.currentText().strip(),
+        )
 
-        temps = [row["T"] for row in rows]
-        max_step = max(abs(temps[i + 1] - temps[i]) for i in range(len(temps) - 1))
-        min_T, max_T = temps[0], temps[-1]
-        warning = None
-
-        if target_temperature < min_T:
-            gap = min_T - target_temperature
-            warning = self._tr(
-                f"T_gas_wall is below the available S database range ({min_T:g}...{max_T:g} K).",
-                f"T_gas_wall ниже доступного диапазона базы S ({min_T:g}...{max_T:g} К)."
-            )
-            if gap > max_step:
-                raise ValueError(warning)
-            slope, step = self._thermal_local_slope(rows, "lower")
-            T1 = min_T - step
-            S1 = rows[0]["S"] + slope * (T1 - min_T)
-            T2, S2 = rows[0]["T"], rows[0]["S"]
-        elif target_temperature > max_T:
-            gap = target_temperature - max_T
-            warning = self._tr(
-                f"T_gas_wall is above the available S database range ({min_T:g}...{max_T:g} K).",
-                f"T_gas_wall выше доступного диапазона базы S ({min_T:g}...{max_T:g} К)."
-            )
-            if gap > max_step:
-                raise ValueError(warning)
-            slope, step = self._thermal_local_slope(rows, "upper")
-            T1, S1 = rows[-1]["T"], rows[-1]["S"]
-            T2 = max_T + step
-            S2 = rows[-1]["S"] + slope * (T2 - max_T)
-        else:
-            for row in rows:
-                if abs(row["T"] - target_temperature) < 1e-9:
-                    return row["S"], warning
-            T1 = S1 = T2 = S2 = None
-            for i in range(len(rows) - 1):
-                if rows[i]["T"] <= target_temperature <= rows[i + 1]["T"]:
-                    T1, S1 = rows[i]["T"], rows[i]["S"]
-                    T2, S2 = rows[i + 1]["T"], rows[i + 1]["S"]
-                    break
-            if T1 is None:
-                raise ValueError("Could not choose S interpolation interval.")
-
-        if abs(T2 - T1) < 1e-12:
-            raise ValueError("Could not interpolate S: equal temperatures.")
-        S_result = S2 + (S1 - S2) * (T2 - target_temperature) / (T2 - T1)
-        return float(S_result), warning
 
     def _thermal_read_image(self, path):
         image = mpimg.imread(str(path))
@@ -4285,18 +2120,12 @@ class Window(QMainWindow):
         return image.astype(float)
 
     def _thermal_group_consecutive(self, indices):
-        indices = np.asarray(indices, dtype=int)
-        if indices.size == 0:
-            return []
-        breaks = np.where(np.diff(indices) > 1)[0] + 1
-        return np.split(indices, breaks)
+        return group_consecutive(indices)
+
 
     def _thermal_line_centers(self, scores, relative_threshold=0.35):
-        if scores.size == 0 or scores.max() <= 0:
-            return np.array([], dtype=int)
-        indices = np.where(scores >= relative_threshold * scores.max())[0]
-        groups = self._thermal_group_consecutive(indices)
-        return np.array([int(round(group.mean())) for group in groups if group.size > 0], dtype=int)
+        return line_centers(scores, relative_threshold)
+
 
     def _thermal_detect_q0_geometry(self, image):
         red = image[:, :, 0]
@@ -4454,38 +2283,18 @@ class Window(QMainWindow):
         return branch_tables
 
     def _thermal_interp_q0(self, r_ratio, branch, branch_tables):
-        if branch == "critical":
-            left = self._thermal_interp_q0(1.0, "precritical", branch_tables)
-            right = self._thermal_interp_q0(1.0, "postcritical", branch_tables)
-            return tuple(0.5 * (left[i] + right[i]) for i in range(3))
-        ratios, q0, xpix, ypix = branch_tables[branch]
-        clipped = float(np.clip(r_ratio, ratios.min(), ratios.max()))
-        return (
-            float(np.interp(clipped, ratios, q0)),
-            float(np.interp(clipped, ratios, xpix)),
-            float(np.interp(clipped, ratios, ypix)),
-        )
+        return interp_q0(r_ratio, branch, branch_tables)
 
     def _thermal_branch(self, index, throat_index):
-        if index < throat_index:
-            return "precritical"
-        if index > throat_index:
-            return "postcritical"
-        return "critical"
+        return nozzle_branch(index, throat_index)
 
     def _thermal_q_l_coefficient(self, branch, r_ratio):
-        if branch == "precritical":
-            return 0.2 if r_ratio >= 1.19 else 0.05
-        if branch == "critical":
-            return 0.05
-        return 0.02 if r_ratio <= 1.5 else 0.004
+        return radiative_coefficient(branch, r_ratio)
+
 
     def _thermal_style_x(self, branch, r_ratio):
-        if branch == "precritical":
-            return (2.5 - r_ratio) / (2.5 - 1.0)
-        if branch == "critical":
-            return 1.0
-        return 1.0 + (r_ratio - 1.0) / (2.5 - 1.0)
+        return styled_branch_x(branch, r_ratio)
+
 
     def on_calc_thermal(self):
         # Calculate wall temperatures, heat fluxes, and total thermal losses.
@@ -4862,36 +2671,9 @@ class Window(QMainWindow):
                                         f"Ошибка чтения {os.path.basename(path)}: {e}"))
 
     def _read_thermal_table_from_xlsx(self, path):
-        raw = pd.read_excel(path, header=None)
         labels = getattr(self.page_thermal, "_table_parameter_labels", {})
-        label_to_column = {str(label).replace("\n", " ").strip(): column for column, label in labels.items()}
-        label_to_column.update({str(column).replace("\n", " ").strip(): column for column in labels})
+        return read_thermal_table_xlsx(path, labels)
 
-        table_start = None
-        for idx in range(len(raw.index)):
-            first = str(raw.iloc[idx, 0]).strip()
-            if first in ("Parameter", "Параметр"):
-                row_values = [str(v).strip() for v in raw.iloc[idx].tolist() if pd.notna(v)]
-                if any(value.startswith("Point") or value.startswith("Точка") for value in row_values):
-                    table_start = idx
-                    break
-        if table_start is None:
-            return None
-
-        rows = {}
-        for idx in range(table_start + 1, len(raw.index)):
-            label = raw.iloc[idx, 0]
-            if pd.isna(label):
-                continue
-            key = str(label).replace("\n", " ").strip()
-            column = label_to_column.get(key)
-            if column is None:
-                continue
-            rows[column] = raw.iloc[idx, 1:].dropna().tolist()
-
-        if not rows:
-            return None
-        return pd.DataFrame(rows)
 
     def _read_thermal_table(self, folder):
         csv_path = self._find_file(folder, "thermal_calculation", ["csv"])
@@ -4903,22 +2685,8 @@ class Window(QMainWindow):
         return None
 
     def _read_thermal_summary_from_xlsx(self, path):
-        raw = pd.read_excel(path, header=None)
-        values = []
-        for idx in range(min(len(raw.index), 8)):
-            if raw.shape[1] < 2:
-                break
-            value = self._float_from_text(raw.iloc[idx, 1])
-            if value is not None and np.isfinite(value):
-                values.append(value)
-        if len(values) < 4:
-            return {}
-        return {
-            "T_wall_material_max": values[0],
-            "T_gas_wall": values[1],
-            "S_gas_wall": values[2],
-            "Q": values[3],
-        }
+        return read_thermal_summary_xlsx(path, self._float_from_text)
+
 
     def _read_thermal_summary(self, folder):
         summary_path = self._find_file(folder, "thermal_summary", ["csv"])
@@ -5069,39 +2837,14 @@ class Window(QMainWindow):
         path = self._find_file(folder, "report", ["txt"])
         if not path:
             return {}
-
-        params = {}
-        begin = "LRE_NOZZLE_DESIGNER_PARAMS_BEGIN"
-        end = "LRE_NOZZLE_DESIGNER_PARAMS_END"
-        in_block = False
-
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                for raw_line in f:
-                    line = raw_line.strip()
-                    if line.startswith("#"):
-                        line = line[1:].strip()
-
-                    if line == begin:
-                        in_block = True
-                        continue
-                    if line == end:
-                        break
-                    if not in_block or not line:
-                        continue
-
-                    if "\t" in line:
-                        key, value = line.split("\t", 1)
-                    elif "=" in line:
-                        key, value = line.split("=", 1)
-                    else:
-                        continue
-                    params[key.strip()] = value.strip()
+            return read_report_parameters(path)
         except Exception as e:
-            raise RuntimeError(self._tr(f"Error reading report parameters: {e}",
-                                        f"РћС€РёР±РєР° С‡С‚РµРЅРёСЏ РїР°СЂР°РјРµС‚СЂРѕРІ report: {e}"))
+            raise RuntimeError(self._tr(
+                f"Error reading report parameters: {e}",
+                f"Ошибка чтения параметров report: {e}",
+            ))
 
-        return params
 
     def _set_if_present(self, edit: QLineEdit, value):
         if value is None or value == "":
@@ -5671,94 +3414,21 @@ class Window(QMainWindow):
         return [xlsx_name, csv_name, summary_csv_name, png_name]
 
     def save_results_table_xlsx(self, path):
-        # Write the consolidated engineering results to a formatted Excel workbook.
-        from openpyxl import Workbook
-        from openpyxl.styles import PatternFill, Alignment, Font, Border, Side
-        from openpyxl.utils import get_column_letter
-
-        wb = Workbook()
-        ws = wb.active
-        ws.title = self._tr("Results", "Результаты")
-
-        header_fill = PatternFill("solid", fgColor="FFFFFF")
-        section_fill = PatternFill("solid", fgColor="D9EEF3")
-
-        thin_gray = Side(style="thin", color="D9D9D9")
-        thin_black = Side(style="thin", color="000000")
-
-        ws.append([self._tr("Parameter", "Параметр"), self._tr("Value", "Значение"),
-                   self._tr("Unit", "Единица")])
-
-        current_section = None
-
-        for section, param, value, unit in self._collect_results_table():
-            if section != current_section:
-                row_idx = ws.max_row + 1
-                ws.append([section, "", ""])
-                ws.merge_cells(
-                    start_row=row_idx,
-                    start_column=1,
-                    end_row=row_idx,
-                    end_column=3
-                )
-                current_section = section
-
-            ws.append([param, value, unit])
-
-        max_row = ws.max_row
-        max_col = 3
-
+        headers = (
+            self._tr("Parameter", "Параметр"),
+            self._tr("Value", "Значение"),
+            self._tr("Unit", "Единица"),
+            self._tr("Results", "Результаты"),
+        )
         section_names = [
             self._tr("Input Parameters", "Входные параметры"),
             self._tr("Specific Impulse and Flow Rates", "Удельные импульсы и расходы"),
-            self._tr("Geometry Parameters", "Геометрические параметры")
+            self._tr("Geometry Parameters", "Геометрические параметры"),
         ]
+        write_results_table_xlsx(
+            path, self._collect_results_table(), headers, section_names
+        )
 
-        for row in range(1, max_row + 1):
-            is_header = row == 1
-            is_section = ws.cell(row=row, column=1).value in section_names
-
-            for col in range(1, max_col + 1):
-                cell = ws.cell(row=row, column=col)
-
-                cell.border = Border(
-                    left=thin_black,
-                    right=thin_black,
-                    top=thin_black if is_header or is_section else thin_gray,
-                    bottom=thin_black if row == max_row or is_header or is_section else thin_gray
-                )
-
-                cell.alignment = Alignment(
-                    horizontal="center" if is_section else "left",
-                    vertical="center"
-                )
-
-                if is_header:
-                    cell.fill = header_fill
-                    cell.font = Font(bold=True)
-
-                if is_section:
-                    cell.fill = section_fill
-
-        for col_idx in range(1, max_col + 1):
-            max_len = 0
-            col_letter = get_column_letter(col_idx)
-
-            for row_idx in range(1, max_row + 1):
-                cell = ws.cell(row=row_idx, column=col_idx)
-
-                if cell.coordinate in ws.merged_cells:
-                    continue
-
-                value = "" if cell.value is None else str(cell.value)
-                max_len = max(max_len, len(value))
-
-            ws.column_dimensions[col_letter].width = max_len + 3
-
-        ws.column_dimensions["B"].width = max(ws.column_dimensions["B"].width, 18)
-        ws.column_dimensions["C"].width = max(ws.column_dimensions["C"].width, 12)
-
-        wb.save(path)
 
     def _collect_results_table(self):
         inputs = self._tr("Input Parameters", "Входные параметры")
@@ -5863,7 +3533,7 @@ class Window(QMainWindow):
     def _set_pa_validator(self, min_val: float):
         self.min_pa = min_val
         upper = max(float(min_val), NOZZLE_EXIT_PRESSURE_MAX_MPA)
-        v = QDoubleValidator(min_val, upper, 6, self)
+        v = FlexibleDoubleValidator(min_val, upper, 6, self)
         v.setNotation(QDoubleValidator.StandardNotation)
         v.setLocale(self._locale)
         self.ed_p_a.setValidator(v)
@@ -6048,4 +3718,3 @@ if __name__ == "__main__":
     w.resize(1200, 780)
     w.show()
     sys.exit(app.exec_())
-
