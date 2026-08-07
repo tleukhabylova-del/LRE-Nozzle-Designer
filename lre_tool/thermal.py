@@ -32,6 +32,13 @@ def local_slope(rows, side, n_points=4):
 
 def interpolate_s(rows, target_temperature, translate, pair_name):
     rows = sorted(rows, key=lambda row: row["T"])
+
+    # An exact database temperature does not require interpolation, so one
+    # temperature row is sufficient in this case.
+    for row in rows:
+        if abs(row["T"] - target_temperature) < 1e-9:
+            return row["S"], None
+
     if len(rows) < 2:
         raise ValueError(translate(
             f"Thermal-load calculation is unavailable for the propellant pair “{pair_name}”: "
@@ -77,9 +84,6 @@ def interpolate_s(rows, target_temperature, translate, pair_name):
         temperature_2 = maximum_temperature + step
         value_2 = rows[-1]["S"] + slope * (temperature_2 - maximum_temperature)
     else:
-        for row in rows:
-            if abs(row["T"] - target_temperature) < 1e-9:
-                return row["S"], warning
         temperature_1 = value_1 = temperature_2 = value_2 = None
         for index in range(len(rows) - 1):
             if rows[index]["T"] <= target_temperature <= rows[index + 1]["T"]:

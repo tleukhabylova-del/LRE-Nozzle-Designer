@@ -65,14 +65,9 @@ def _except_hook(exctype, value, tb):
     except Exception:
         print(msg, file=sys.stderr)
 
-
 sys.excepthook = _except_hook
 
-
 # Reference performance data for each supported oxidizer-fuel combination.
-
-
-
 # Core engineering model: computes propellant flow, nozzle geometry, and performance.
 
 
@@ -1274,12 +1269,6 @@ class Window(QMainWindow):
 
     def _on_thrust_edited(self, source: str):
         self._thrust_source = source
-        if hasattr(self, "cb_calc_mode"):
-            target_idx = 1 if source == "P_8" else 0
-            if self.cb_calc_mode.currentIndex() != target_idx:
-                with QtCore.QSignalBlocker(self.cb_calc_mode):
-                    self.cb_calc_mode.setCurrentIndex(target_idx)
-                self._calc_mode = "vacuum" if target_idx == 1 else "sea_level"
         if hasattr(self, "timer"):
             self.timer.start()
 
@@ -2075,8 +2064,15 @@ class Window(QMainWindow):
                 target_k_m = float(self.model.k_m)
             rows = self._thermal_collect_s_values(target_k_m=target_k_m)
             temperatures = sorted({float(row["T"]) for row in rows})
-            if len(temperatures) < 2:
+            if not temperatures:
                 return None
+            if len(temperatures) == 1:
+                material_temperature = temperatures[0] + 50.0
+                return (
+                    self.cbFuel.currentText().strip(),
+                    material_temperature,
+                    material_temperature,
+                )
             max_step = max(
                 abs(temperatures[index + 1] - temperatures[index])
                 for index in range(len(temperatures) - 1)
@@ -2461,8 +2457,31 @@ class Window(QMainWindow):
                     "Enter the maximum fire-wall material temperature.",
                     "Введите предельно допустимую температуру материала огневой стенки."
                 ))
-            T_gas_wall = T_wall_material_max - 50.0
             s_rows = self._thermal_collect_s_values()
+            available_temperatures = sorted({float(row["T"]) for row in s_rows})
+            if len(available_temperatures) == 1:
+                available_gas_temperature = available_temperatures[0]
+                required_wall_temperature = available_gas_temperature + 50.0
+                if not np.isclose(T_wall_material_max, required_wall_temperature):
+                    T_wall_material_max = required_wall_temperature
+                    self.page_thermal.ed_T_wall_material_max.setText(
+                        f"{required_wall_temperature:g}"
+                    )
+                    QMessageBox.information(
+                        self,
+                        self._tr("Temperature adjusted", "Температура скорректирована"),
+                        self._tr(
+                            f"For the selected propellant pair, calculation data are available only "
+                            f"for a gas-wall temperature of {available_gas_temperature:g} K. "
+                            f"With the adopted temperature difference of 50 K, the maximum allowable "
+                            f"wall-material temperature has been set to {required_wall_temperature:g} K.",
+                            f"Для выбранной топливной пары расчётные данные имеются только при "
+                            f"температуре газа у стенки {available_gas_temperature:g} К. С учётом "
+                            f"принятого температурного перепада 50 К предельно допустимая температура "
+                            f"материала стенки установлена равной {required_wall_temperature:g} К."
+                        )
+                    )
+            T_gas_wall = T_wall_material_max - 50.0
             S_gas_wall, warning = self._thermal_interpolate_s(s_rows, T_gas_wall)
 
             p_ko, R_kro, So = 4.0, 54.5, 0.94

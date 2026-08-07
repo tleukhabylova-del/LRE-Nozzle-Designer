@@ -205,6 +205,12 @@ class PlotWidget(QWidget):
         self.fig.clf()
         self.ax = self.fig.add_subplot(111)
         self._apply_ax_theme()
+        self._hover_x = None
+        self._hover_y = None
+        self._hover_val = None
+        self._hover_label = ""
+        self._hover_unit = ""
+        self.canvas.draw_idle()
 
     def draw_fill(self, x_arr, y_arr, val_arr, y0=0.0, cmap="turbo", refine=2, clabel=""):
         self.clear()

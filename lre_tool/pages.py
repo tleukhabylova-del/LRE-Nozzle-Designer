@@ -328,9 +328,11 @@ class ThermalPage(QWidget):
         self.temperature_help_title = tr("Temperature input", "Ввод температуры")
         self.temperature_help_text = tr(
             "Enter the maximum allowable temperature of the combustion-wall material in kelvins. "
-            "This value is used for the thermal-load calculation.",
+            "The gas-wall temperature used to select the thermodynamic coefficient is 50 K lower "
+            "than the entered material temperature.",
             "Введите предельно допустимую температуру материала огневой стенки в кельвинах. "
-            "Это значение используется при расчёте тепловых нагрузок."
+            "Температура газа у стенки, по которой выбирается термодинамический коэффициент, "
+            "принимается на 50 К ниже введённой температуры материала."
         )
         self._table_point_caption = tr("Point", "Точка")
         self._table_parameter_caption = tr("Parameter", "Параметр")
@@ -362,11 +364,26 @@ class ThermalPage(QWidget):
             range_data = self.temperature_range_provider()
             if range_data is not None:
                 pair_name, minimum, maximum = range_data
-                if self.temperature_unit == "К":
+                single_temperature = abs(maximum - minimum) < 1e-9
+                if self.temperature_unit == "К" and single_temperature:
+                    text += (
+                        f"\n\nВыбранная топливная пара: {pair_name}."
+                        f"\nДля этой пары доступна только одна расчётная температура материала "
+                        f"стенки: {minimum:g} К. Если ввести другое значение, программа "
+                        f"автоматически установит {minimum:g} К и покажет пояснение."
+                    )
+                elif self.temperature_unit == "К":
                     text += (
                         f"\n\nВыбранная топливная пара: {pair_name}."
                         f"\nДоступный расчётный диапазон вводимой температуры: "
                         f"{minimum:g}–{maximum:g} К."
+                    )
+                elif single_temperature:
+                    text += (
+                        f"\n\nSelected propellant pair: {pair_name}."
+                        f"\nOnly one wall-material calculation temperature is available for this pair: "
+                        f"{minimum:g} K. If another value is entered, the application will "
+                        f"automatically set {minimum:g} K and display an explanation."
                     )
                 else:
                     text += (
@@ -376,9 +393,9 @@ class ThermalPage(QWidget):
                     )
             else:
                 text += (
-                    "\n\nДиапазон температур для выбранной топливной пары недоступен."
+                    "\n\nДля выбранной топливной пары не найдены температурные данные."
                     if self.temperature_unit == "К" else
-                    "\n\nThe temperature range for the selected propellant pair is unavailable."
+                    "\n\nNo temperature data were found for the selected propellant pair."
                 )
         QMessageBox.information(self, self.temperature_help_title, text)
 
