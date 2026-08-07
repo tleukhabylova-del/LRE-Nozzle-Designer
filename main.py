@@ -82,7 +82,7 @@ class Window(QMainWindow):
 
         # --- Custom title bar replacing the system title bar ---
         self.setWindowFlag(Qt.FramelessWindowHint, True)
-        self._drag_pos = None  # для перетаскивания окна
+        self._drag_pos = None  # Used while dragging the custom window.
 
         self.setWindowTitle("LRE Nozzle Designer")
         self.model = Model()
@@ -104,7 +104,7 @@ class Window(QMainWindow):
         # ===== Left navigation menu =====
         left = QFrame()
         left.setObjectName("side")
-        left.setMinimumWidth(160)  # можно добавить ещё setMaximumWidth(260) при желании
+        left.setMinimumWidth(160)
         left.setFrameShape(QFrame.NoFrame)
         vleft = QVBoxLayout(left)
         vleft.setContentsMargins(14, 14, 14, 14)
@@ -163,7 +163,7 @@ class Window(QMainWindow):
 
         self.chk_autoTk = QCheckBox("Auto-fill")
         self.chk_autoTk.setChecked(True)
-        self._auto_mode = True  # флаг режима
+        self._auto_mode = True  # Automatic parameter-filling mode.
         self.chk_autoTk.stateChanged.connect(self.on_auto_mode_toggled)
         vInputs.addWidget(self.chk_autoTk)
 
@@ -184,11 +184,11 @@ class Window(QMainWindow):
 
         LABEL_W = 180
         FIELD_W = 176
-        LEFT_TOTAL_W = LABEL_W + FIELD_W + 60  # ← считаем ЗДЕСЬ, до использования
+        LEFT_TOTAL_W = LABEL_W + FIELD_W + 60
 
         grid.setColumnMinimumWidth(0, LABEL_W)
         grid.setColumnStretch(0, 0)
-        grid.setColumnStretch(1, 1)  # растягиваем колонку с полями
+        grid.setColumnStretch(1, 1)  # Allow the input-field column to expand.
         # grid.setColumnStretch(2, 1)    # The third column is unused.
         required_inputs_layout.addLayout(grid)
         vInputs.addWidget(self.required_inputs_frame)
@@ -439,12 +439,12 @@ class Window(QMainWindow):
         scroll_inputs.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll_inputs.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         scroll_inputs.setWidget(inputsWidget)
-        scroll_inputs.setMinimumWidth(420)  # как у тебя было; можно поменять
+        scroll_inputs.setMinimumWidth(420)
         scroll_inputs.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
 
         # --- Left column: scroll area above, action button below ---
         leftColumn = QWidget()
-        leftColumn.setMinimumWidth(LEFT_TOTAL_W)  # ← фиксируем ширину всей левой части
+        leftColumn.setMinimumWidth(LEFT_TOTAL_W)
         vLeftColumn = QVBoxLayout(leftColumn)
         vLeftColumn.setContentsMargins(0, 0, 0, 0)
         vLeftColumn.setSpacing(8)
@@ -1949,15 +1949,16 @@ class Window(QMainWindow):
         # Locate thermal reference datasets for the selected propellant pair.
         root = self._project_root()
         folders = []
-        for folder in root.glob("para *"):
-            if not folder.is_dir():
-                continue
-            match = re.match(r"^para\s+((?:\d+\s*)+)", folder.name, flags=re.IGNORECASE)
-            if not match:
-                continue
-            numbers = [int(value) for value in re.findall(r"\d+", match.group(1))]
-            if pair_number in numbers:
-                folders.append(folder)
+        for pattern in ("pair *", "para *"):
+            for folder in root.glob(pattern):
+                if not folder.is_dir():
+                    continue
+                match = re.match(r"^(?:pair|para)\s+((?:\d+\s*)+)", folder.name, flags=re.IGNORECASE)
+                if not match:
+                    continue
+                numbers = [int(value) for value in re.findall(r"\d+", match.group(1))]
+                if pair_number in numbers and folder not in folders:
+                    folders.append(folder)
         return sorted(folders)
 
     def _thermal_read_csv_columns(self, csv_path):
@@ -3138,7 +3139,7 @@ class Window(QMainWindow):
                 ])
                 np.savetxt(
                     os.path.join(target_dir, "xyz.txt"),
-                    xyz, fmt="%.9g"  # по умолчанию разделитель — пробел
+                    xyz, fmt="%.9g"  # The default delimiter is a space.
                 )
                 files_saved.append("xyz.txt")
 

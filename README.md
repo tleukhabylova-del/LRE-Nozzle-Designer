@@ -1,59 +1,64 @@
 # LRE Nozzle Designer
 
-**LRE Nozzle Designer** — настольное приложение для расчёта параметров жидкостного ракетного двигателя и профиля сопла, построения графиков и оценки тепловых нагрузок. Интерфейс доступен на русском и английском языках.
+**LRE Nozzle Designer** is a desktop application for calculating liquid rocket engine parameters and nozzle geometry, plotting calculated distributions, and estimating thermal loads. The user interface is available in English and Russian.
 
-## Возможности
+## Features
 
-- выбор топливной пары;
-- расчёт параметров двигателя и геометрии сопла;
-- построение графиков геометрии, давления и других расчётных величин;
-- расчёт тепловых нагрузок на стенку камеры и сопла;
-- сохранение результатов в текстовые, CSV- и Excel-файлы;
-- светлая и тёмная темы интерфейса.
+- propellant-pair selection;
+- engine and nozzle-geometry calculations;
+- nozzle geometry, pressure, temperature, and Mach-number plots;
+- combustion-chamber and nozzle-wall thermal-load calculations;
+- export of results to text, CSV, and Excel files;
+- light and dark interface themes.
 
-## Требования
+## Requirements
 
-- Windows 10/11;
+- Windows 10 or 11;
 - Python 3.12;
-- библиотеки из файла `requirements.txt`.
+- the packages listed in `requirements.txt`.
 
-## Установка
+## Installation
 
-1. Скачайте или клонируйте репозиторий.
-2. Откройте PowerShell в папке проекта.
-3. Создайте виртуальное окружение:
+1. Download or clone the repository.
+2. Open PowerShell in the project directory.
+3. Create a virtual environment:
 
    ```powershell
    py -3.12 -m venv .venv
    ```
 
-4. Активируйте его:
+4. Activate it:
 
    ```powershell
    .\.venv\Scripts\Activate.ps1
    ```
 
-5. Установите зависимости:
+5. Install the dependencies:
 
    ```powershell
    python -m pip install --upgrade pip
    python -m pip install -r requirements.txt
    ```
 
-## Запуск
+## Running the application
 
 ```powershell
 python main.py
 ```
 
-## Структура проекта
+## Project structure
 
-Сейчас приложение находится в одном Python-файле. Планируемое улучшение — постепенно разделить интерфейс, расчётную часть, построение графиков и работу с файлами на отдельные модули без изменения поведения программы.
+- `main.py` contains the main PyQt application window and coordinates the calculation workflow.
+- `lre_tool/` contains calculation models, plotting, persistence, validation, styling, dialogs, and UI-page modules.
+- `pair */` directories contain reference data used by the thermal-load calculation.
+- `ARCHITECTURE.md` describes the module boundaries and refactoring rules.
 
-## Важное замечание
+Thermal reference CSV files are named after the corresponding gas-wall temperature in kelvins, for example `600.csv`.
 
-Программа выполняет инженерные расчёты. Перед практическим применением результаты необходимо проверять независимыми методами и по профильной документации.
+## Engineering notice
 
-## Автор
+This application performs engineering calculations. Before practical use, verify its results independently and against relevant technical documentation.
+
+## Author
 
 [tleukhabylova-del](https://github.com/tleukhabylova-del)

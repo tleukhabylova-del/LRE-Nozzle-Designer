@@ -54,19 +54,19 @@ class Model:
         self.T_st = None
         self.J_st_ud = None
         # Input parameters.
-        self.p_k = None  # МПа
-        self.P_calc = None  # Н
-        self.P_h = None  # Н
-        self.P_0 = None  # Н
-        self.P_8 = None  # Н
+        self.p_k = None  # MPa
+        self.P_calc = None  # N
+        self.P_h = None  # N
+        self.P_0 = None  # N
+        self.P_8 = None  # N
         self.coefJ = COEF_J_DEFAULT
         self.z_k = None
-        self.T_k = None  # К
-        self.p_e = None  # МПа
-        self.p_h = None  # МПа
-        self.p_a = None  # МПа
-        self.p_0 = 0.0981  # МПа
-        self.p = 0.0981  # МПа
+        self.T_k = None  # K
+        self.p_e = None  # MPa
+        self.p_h = None  # MPa
+        self.p_a = None  # MPa
+        self.p_0 = 0.0981  # MPa
+        self.p = 0.0981  # MPa
         self.k1 = None
 
         # --- Geometry ---

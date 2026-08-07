@@ -198,7 +198,7 @@ def apply_window_palette(window, mode: str):
             color: {hover_fg};
         }}
 
-        /* Основная фиолетовая кнопка (если задашь objectName="primaryButton") */
+        /* Primary purple button (when objectName="primaryButton" is set). */
         QPushButton#primaryButton {{
             background: {primary_btn_bg};
             color: {primary_btn_fg};
@@ -243,7 +243,7 @@ def apply_window_palette(window, mode: str):
 
 
 
-        /* Цветные скроллбары с фиолетовым ползунком */
+        /* Colored scroll bars with a purple handle. */
         QScrollBar:vertical {{
             background: transparent;
             width: 10px;

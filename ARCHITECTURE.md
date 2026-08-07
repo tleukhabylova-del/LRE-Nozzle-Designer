@@ -1,26 +1,24 @@
-# Архитектура LRE Nozzle Designer
+# LRE Nozzle Designer Architecture
 
-Приложение разделяется небольшими проверяемыми этапами. Формулы и поведение
-программы при структурном рефакторинге не изменяются.
+The application is being separated into small, verifiable modules. Structural refactoring must preserve the formulas and observable application behavior.
 
-## Текущие модули
+## Current modules
 
-- `main.py` — интерфейс PyQt и запуск приложения. Пока это самый большой файл.
-- `lre_tool/constants.py` — постоянные и справочные данные топливных пар.
-- `lre_tool/model.py` — инженерная модель, геометрия сопла и объект состояния
-  `GeometryState`.
-- `lre_tool/mach.py` — расчёт распределения числа Маха вдоль сопла.
-- `lre_tool/plotting.py` — построение графиков и чертежа сопла.
-- `lre_tool/pages.py` — страницы графиков и теплового анализа интерфейса.
-- `lre_tool/persistence.py` — чтение отчётов и таблиц, запись результатов Excel.
-- `lre_tool/thermal.py` — интерполяция и вспомогательные формулы теплового расчёта.
-- `lre_tool/styles.py` — палитры и таблица стилей светлой и тёмной темы.
-- `lre_tool/dialogs.py` — диалог просмотра и редактирования топливных пар.
-- `lre_tool/validators.py` — ввод чисел с точкой или запятой.
+- `main.py` — PyQt application window, workflow coordination, and application entry point. It remains the largest file.
+- `lre_tool/constants.py` — constants and propellant-pair reference data.
+- `lre_tool/model.py` — engineering model, nozzle geometry, and the `GeometryState` object.
+- `lre_tool/mach.py` — Mach-number distribution calculations along the nozzle.
+- `lre_tool/plotting.py` — plots and nozzle drawings.
+- `lre_tool/pages.py` — plot pages and the thermal-analysis UI.
+- `lre_tool/persistence.py` — report and table reading plus Excel result export.
+- `lre_tool/thermal.py` — interpolation and supporting thermal-analysis formulas.
+- `lre_tool/styles.py` — light and dark theme palettes and style sheets.
+- `lre_tool/dialogs.py` — propellant-pair viewing and editing dialog.
+- `lre_tool/validators.py` — numeric input with either a decimal point or comma.
 
-## Правила дальнейшего разделения
+## Refactoring rules
 
-1. Каждый перенос сопровождается контрольными тестами до и после изменения.
-2. Расчётные функции получают исходные данные явно, без глобальных переменных.
-3. Один этап меняет только структуру либо поведение, но не оба одновременно.
-4. Изменения отправляются в GitHub после локальной проверки приложения.
+1. Every extraction must be accompanied by checks before and after the change.
+2. Calculation functions receive their inputs explicitly instead of relying on global variables.
+3. A single step changes either structure or behavior, not both.
+4. Changes are published to GitHub only after local application verification.
