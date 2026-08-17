@@ -3302,7 +3302,7 @@ class Window(QMainWindow):
 
         wb = Workbook()
         ws = wb.active
-        ws.title = "Тепловой расчёт"
+        ws.title = self._tr("Thermal calculation", "Тепловой расчёт")
         ws.sheet_view.showGridLines = True
 
         title_fill = PatternFill("solid", fgColor="2B66A4")
@@ -3313,19 +3313,19 @@ class Window(QMainWindow):
         border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
         ws.merge_cells("A1:J1")
-        ws["A1"] = "Тепловой расчёт"
+        ws["A1"] = self._tr("Thermal calculation", "Тепловой расчёт")
         ws["A1"].fill = title_fill
         ws["A1"].font = Font(bold=True, color="FFFFFF", size=14)
         ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
         ws.row_dimensions[1].height = 24
         ws.unmerge_cells("A1:J1")
-        ws["A1"] = "Параметр"
-        ws["B1"] = "Значение"
-        ws["C1"] = "Единица"
+        ws["A1"] = self._tr("Parameter", "Параметр")
+        ws["B1"] = self._tr("Value", "Значение")
+        ws["C1"] = self._tr("Unit", "Единица")
 
-        ws["A3"] = "Параметр"
-        ws["B3"] = "Значение"
-        ws["C3"] = "Единица"
+        ws["A3"] = self._tr("Parameter", "Параметр")
+        ws["B3"] = self._tr("Value", "Значение")
+        ws["C3"] = self._tr("Unit", "Единица")
         T_wall_material_max = getattr(self, "T_wall_material_max", None)
         if T_wall_material_max is None and hasattr(self, "page_thermal"):
             T_wall_material_max = getattr(self.page_thermal, "_last_max_temperature", None)
@@ -3342,10 +3342,17 @@ class Window(QMainWindow):
         )
 
         summary = [
-            ("Предельно допустимая температура материала огневой стенки", float(T_wall_material_max), "K"),
-            ("Температура газовой стенки", float(self.T_gas_wall), "K"),
-            ("Термодинамический коэффициент", float(self.S_gas_wall), "-"),
-            ("Суммарная тепловая нагрузка", float(self.Q), "W"),
+            (
+                self._tr(
+                    "Maximum allowable combustion-wall material temperature",
+                    "Предельно допустимая температура материала огневой стенки",
+                ),
+                float(T_wall_material_max),
+                "K",
+            ),
+            (self._tr("Gas-wall temperature", "Температура газовой стенки"), float(self.T_gas_wall), "K"),
+            (self._tr("Thermodynamic coefficient", "Термодинамический коэффициент"), float(self.S_gas_wall), "-"),
+            (self._tr("Total thermal load", "Суммарная тепловая нагрузка"), float(self.Q), "W"),
         ]
         for row, values in enumerate(summary, start=2):
             for col, value in enumerate(values, start=1):
