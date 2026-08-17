@@ -1282,18 +1282,60 @@ class Window(QMainWindow):
             source = "P_0"
         return source, self._v(fields[source])
 
+    def _calc_specific_impulses_for_thrust(self, p_k, coefJ, T_k, p_e, p_h):
+        """Calculate the three operating-point impulses without mutating the model."""
+        m = self.model
+        if (None in (m.k, m.R, m.J_st_ud)
+                or m.k <= 1 or m.R <= 0 or m.J_st_ud <= 0):
+            raise ValueError("specific impulse inputs are outside the method domain")
+        k1 = (m.k - 1) / m.k
+        eps = p_e / p_k
+        J_pr = coefJ * m.J_st_ud
+        radicand = (
+            (1 - eps ** k1) * p_k ** k1
+            / (p_k ** k1 - m.p_0 ** k1)
+        )
+        if radicand <= 0 or not np.isfinite(radicand):
+            raise ValueError("specific impulse radicand is non-positive")
+
+        J_r = (
+            J_pr
+            * (0.67 - 0.016 * p_k + 0.163 * np.sqrt(p_k))
+            * np.sqrt(radicand)
+        )
+        if J_r <= 0 or not np.isfinite(J_r):
+            raise ValueError("specific impulse at design expansion is non-positive")
+
+        pressure_delta = m.R * T_k * eps ** k1 / J_r
+        J_8 = J_r + pressure_delta
+
+        def at_ambient(p_amb):
+            return J_8 - pressure_delta * (p_amb / p_e)
+
+        return at_ambient(m.p_0), J_8, at_ambient(p_h)
+
     def _resolve_design_thrust(self, p_k, thrust_value, thrust_source, coefJ, z_k, T_k, p_e, p_h):
-        # Normalize sea-level or vacuum thrust into the active design condition.
-        self.model.compute_geometry(p_k, 1.0, coefJ, z_k, T_k, p_e, p_h=p_h, calc_mode=self._calc_mode)
+        # Convert whichever thrust the user edited into thrust at the selected ambient pressure.
+        J_0, J_8, J_calc = self._calc_specific_impulses_for_thrust(
+            p_k, coefJ, T_k, p_e, p_h
+        )
         if thrust_source == "P_0":
-            if self.model.J_0_ud is None or self.model.J_0_ud <= 0:
-                raise ValueError("specific impulse at sea level is non-positive")
-            return thrust_value * self.model.J_h_ud / self.model.J_0_ud
+            if abs(J_0) <= 1e-12:
+                raise ValueError("specific impulse at sea level is zero")
+            self._set_if_diff(self.ed_P_8, thrust_value * J_8 / J_0)
+            P_calc = thrust_value * J_calc / J_0
+            if P_calc <= 0 or not np.isfinite(P_calc):
+                raise ValueError("design thrust is non-positive")
+            return P_calc
         if thrust_source == "P_8":
-            if self.model.J_8_ud is None or self.model.J_8_ud <= 0:
+            if J_8 <= 0 or not np.isfinite(J_8):
                 raise ValueError("specific impulse in vacuum is non-positive")
-            return thrust_value * self.model.J_h_ud / self.model.J_8_ud
-        return thrust_value
+            self._set_if_diff(self.ed_P_0, thrust_value * J_0 / J_8)
+            P_calc = thrust_value * J_calc / J_8
+            if P_calc <= 0 or not np.isfinite(P_calc):
+                raise ValueError("design thrust is non-positive")
+            return P_calc
+        raise ValueError("design thrust source is not selected")
 
     def _on_p_k_manual_change(self, *_):
         # Re-enable automatic combustion-temperature calculation whenever
@@ -1304,7 +1346,8 @@ class Window(QMainWindow):
     def _on_calc_mode_changed(self, *_):
         idx = self.cb_calc_mode.currentIndex()
         self._calc_mode = "vacuum" if idx == 1 else "sea_level"
-        self._thrust_source = "P_8" if self._calc_mode == "vacuum" else "P_0"
+        if self._calc_mode == "vacuum":
+            self._set_pa_validator(0.0)
         if hasattr(self, "timer"):
             self.timer.start()
 
@@ -1346,12 +1389,12 @@ class Window(QMainWindow):
             ("fuel_index", v(m.idx)),
             ("calc_mode", self._calc_mode),
             ("k_m", v(m.k_m)), ("R", v(m.R)), ("k", v(m.k)), ("T_st", v(m.T_st)), ("J_st_ud", v(m.J_st_ud)),
-            ("p_k_MPa", v(m.p_k)), ("p_e_MPa", v(m.p_e)),
-            ("P_0_N", v(m.P_0)), ("P_8_N", v(m.P_8)),
+            ("p_k_MPa", v(m.p_k)), ("p_e_MPa", v(m.p_e)), ("p_h_MPa", v(m.p_h)),
+            ("P_calc_N", v(m.P_calc)), ("P_0_N", v(m.P_0)), ("P_8_N", v(m.P_8)),
             ("coefJ", v(m.coefJ)), ("z_k", v(m.z_k)),
             ("T_k_K", v(m.T_k)), ("p_a_MPa", v(m.p_a)),
             ("k1", v(m.k1)), ("p_MPa_sea_level", v(m.p)),
-            ("J_pr_ud_st", v(m.J_pr_ud_st)), ("J_r_ud", v(m.J_r_ud)),
+            ("J_pr_ud_st", v(m.J_pr_ud_st)), ("J_r_ud", v(m.J_r_ud)), ("J_calc_ud", v(m.J_calc_ud)),
             ("J_8_ud", v(m.J_8_ud)), ("J_0_ud", v(m.J_0_ud)),
             ("m_sum_kg_s", v(m.m_)), ("m_g_kg_s", v(m.m_g)), ("m_ok_kg_s", v(m.m_ok)), ("K0", v(m.K_0)),
             ("D_kr_mm", v(m.D_kr)), ("D_a_mm", v(m.D_a)), ("D_k_mm", v(m.D_k)), ("f_a", v(m.fa)),
@@ -1368,8 +1411,7 @@ class Window(QMainWindow):
         self.stack.setCurrentIndex(idx)
 
     def _current_p_h(self):
-        source = getattr(self, "_thrust_source", "P_0")
-        return 0.0 if source == "P_8" else 0.0981
+        return 0.0 if getattr(self, "_calc_mode", "sea_level") == "vacuum" else self.model.p_0
 
     def _expansion_warnings(self, p_e, p_h):
         warnings = []
@@ -1490,6 +1532,12 @@ class Window(QMainWindow):
             )
 
     def _apply_min_p_e_if_needed(self, p_k, T_k, p_e, p_h=None):
+        if getattr(self, "_calc_mode", "sea_level") == "vacuum":
+            self._set_pa_validator(0.0)
+            if p_e is not None and p_e > NOZZLE_EXIT_PRESSURE_MAX_MPA:
+                return self._enforce_p_e_bounds(show_warning=True)
+            return p_e
+
         if None in (p_k, T_k) or p_k <= 0 or T_k <= 0:
             return p_e
         try:
@@ -1547,8 +1595,7 @@ class Window(QMainWindow):
 
         p_e = fnum(self.ed_p_a)
         p_h = self._current_p_h()
-        if p_e is not None:
-            p_e = self._enforce_p_e_bounds(show_warning=True) or p_e
+        p_e = self._apply_min_p_e_if_needed(p_k, cur_Tk, p_e, p_h)
 
         if any(v is None for v in [p_k, thrust_value, z_k, cur_Tk, p_e]):
             QMessageBox.warning(self, self._tr("Input", "Ввод"),
@@ -1559,6 +1606,10 @@ class Window(QMainWindow):
         checks = [
             (p_k <= 0, self._tr("Combustion chamber pressure must be positive.",
                                 "Давление в камере должно быть положительным.")),
+            (p_k <= self.model.p_0, self._tr(
+                "Combustion chamber pressure must exceed the standard atmospheric pressure of 0.0981 MPa for this calculation method.",
+                "Для этой методики давление в камере должно превышать стандартное атмосферное давление 0,0981 МПа."
+            )),
             (p_e <= 0, self._tr("Nozzle exit pressure must be positive.",
                                 "Давление на срезе сопла должно быть положительным.")),
             (p_e >= p_k, self._tr("Nozzle exit pressure must be lower than chamber pressure.",
@@ -1567,8 +1618,6 @@ class Window(QMainWindow):
                                    "Температура в камере должна быть положительной.")),
             (z_k <= 0, self._tr("The number of chambers must be positive.",
                                 "Количество камер должно быть положительным.")),
-            (thrust_value <= 0, self._tr("Thrust must be positive.",
-                                         "Расчетная тяга P_h должна быть положительной.")),
         ]
         for failed, message in checks:
             if failed:
@@ -1594,6 +1643,13 @@ class Window(QMainWindow):
                     self, self._tr("Input error", "Ошибка ввода"),
                     self._tr("Specific impulse in the selected design mode is non-positive.",
                              "Удельный импульс в выбранном расчетном режиме получился неположительным.")
+                )
+                return
+            if "design thrust" in str(e):
+                QMessageBox.critical(
+                    self, self._tr("Input error", "Ошибка ввода"),
+                    self._tr("Thrust in the selected design mode must be positive.",
+                             "Тяга в выбранном расчетном режиме должна быть положительной.")
                 )
                 return
             QMessageBox.critical(self, self._tr("Calculation", "Расчет"),
@@ -1707,6 +1763,9 @@ class Window(QMainWindow):
         add_row(rows, inputs, self._tr("Vacuum thrust P_inf", "Тяга в вакууме P_inf"), self.model.P_8, unit_n)
         add_row(rows, inputs, self._tr("Chamber pressure p_c", "Давление в камере сгорания p_c"), p_k, unit_mpa)
         add_row(rows, inputs, self._tr("Nozzle exit pressure p_e", "Давление на срезе сопла p_e"), p_a, unit_mpa)
+        add_row(rows, inputs, self._tr("Selected-mode ambient pressure p_amb",
+                                       "Давление окружающей среды выбранного режима p_amb"),
+                self.model.p_h, unit_mpa)
         add_row(rows, inputs, self._tr("Chamber temperature T_c", "Температура продуктов в камере T_c"), T_k, unit_k)
         # add_row(rows, "Input and key parameters", "Specific heat ratio", self.model.k)
         # add_row(rows, "Input and key parameters", "Gas constant", self.model.R, "J/(kg·K)")
@@ -1715,9 +1774,12 @@ class Window(QMainWindow):
 
         # add_row(rows, "Specific impulses and flow rates", "Adjusted standard specific thrust impulse",
         #         get_val("J*_adj,std", self.ed_Jpr), "N·s/kg")
-        add_row(rows, impulses, self._tr("Design specific impulse J_design",
-                                         "Удельный импульс на расчётном режиме J_design"),
+        add_row(rows, impulses, self._tr("Matched-expansion specific impulse J_r",
+                                         "Удельный импульс согласованного расширения J_r"),
                 get_val("J*_р,уд", self.ed_Jr), unit_isp)
+        add_row(rows, impulses, self._tr("Selected-mode specific impulse J_calc",
+                                         "Удельный импульс выбранного режима J_calc"),
+                self.model.J_calc_ud, unit_isp)
         add_row(rows, impulses, self._tr("Vacuum specific impulse J_inf", "Удельный импульс в вакууме J_inf"),
                 get_val("J*_8,уд"), unit_isp)
         add_row(rows, impulses, self._tr("Sea-level specific impulse J_SL", "Удельный импульс на уровне моря J_SL"),
@@ -3476,14 +3538,20 @@ class Window(QMainWindow):
             [inputs, self._tr("Chamber pressure p_c", "Давление в камере сгорания p_c"), self.model.p_k, mpa],
             [inputs, self._tr("Chamber temperature T_c", "Температура продуктов в камере T_c"), self.model.T_k, kelvin],
             [inputs, self._tr("Nozzle exit pressure p_e", "Давление на срезе сопла p_e"), self.model.p_a, mpa],
+            [inputs, self._tr("Selected-mode ambient pressure p_amb",
+                              "Давление окружающей среды выбранного режима p_amb"), self.model.p_h, mpa],
             [inputs, self._tr("Specific heat ratio gamma", "Показатель адиабаты γ"), self.model.k, ""],
             [inputs, self._tr("Specific gas constant R_g", "Удельная газовая постоянная R_g"), self.model.R, gas_unit],
 
             [impulses,
              self._tr("Reduced reference specific impulse J_red", "Приведённый опорный удельный импульс J_red"),
              self.model.J_pr_ud_st, isp_unit],
-            [impulses, self._tr("Design specific impulse J_design", "Удельный импульс на расчётном режиме J_design"),
+            [impulses, self._tr("Matched-expansion specific impulse J_r",
+                                "Удельный импульс согласованного расширения J_r"),
              self.model.J_r_ud, isp_unit],
+            [impulses, self._tr("Selected-mode specific impulse J_calc",
+                                "Удельный импульс выбранного режима J_calc"),
+             self.model.J_calc_ud, isp_unit],
             [impulses, self._tr("Vacuum specific impulse J_inf", "Удельный импульс в вакууме J_inf"),
              self.model.J_8_ud, isp_unit],
             [impulses, self._tr("Sea-level specific impulse J_SL", "Удельный импульс на уровне моря J_SL"),
@@ -3664,14 +3732,14 @@ class Window(QMainWindow):
 
         if not all(v is not None for v in (p_k, thrust_value, z_k)):
             return
-        if p_e is not None and p_e > NOZZLE_EXIT_PRESSURE_MAX_MPA:
-            return
 
         if self._auto_allowed("T_k"):
             Tk_auto = m.auto_Tk(p_k) if p_k is not None else None
             if Tk_auto is not None and np.isfinite(Tk_auto):
                 T_k = Tk_auto
                 self._set_if_diff(self.ed_T_k, T_k)
+
+        p_e = self._apply_min_p_e_if_needed(p_k, T_k, p_e, p_h)
 
         if self._auto_allowed("J_pr_ud_st") and m.J_st_ud is not None:
             Jpr = coefJ * m.J_st_ud
@@ -3693,7 +3761,8 @@ class Window(QMainWindow):
             J0 = J8 - m.R * T_k * (p_e / p_k) ** k1 / Jr * (m.p / p_e)
             self._set_if_diff(self.ed_J0, J0)
 
-        if None in (T_k, p_e, p_h) or p_k <= 0 or p_e <= 0 or p_e >= p_k or thrust_value <= 0 or z_k <= 0:
+        if (None in (T_k, p_e, p_h)
+                or p_k <= m.p_0 or p_e <= 0 or p_e >= p_k or z_k <= 0):
             return
         try:
             P_calc = self._resolve_design_thrust(p_k, thrust_value, thrust_source, coefJ, z_k, T_k, p_e, p_h)
