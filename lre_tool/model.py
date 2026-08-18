@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
-from scipy.optimize import fsolve, minimize_scalar
+from scipy.optimize import brentq, minimize_scalar
 
 from .constants import (
     COEF_J_DEFAULT, J_st_list, R_st_list, T_st_list, k_m_list, k_st_list,
@@ -73,6 +73,7 @@ class Model:
         self.J_pr_ud_st = None
         self.J_r_ud = None
         self.J_h_ud = None
+        self.J_calc_ud = None
         self.J_8_ud = None
         self.J_0_ud = None
         self.m_ = None
@@ -126,24 +127,37 @@ class Model:
         return self.T_st * (86.9 - 0.578 * p_k + 6.27 * p_k ** 0.5) / 100.0
 
     def min_p_a(self, coefJ: float, p_k: float, T_k: float) -> float:
+        """Return the exit pressure where sea-level specific impulse reaches zero."""
+        if (None in (self.k, self.R, self.J_st_ud)
+                or self.k <= 1 or self.R <= 0 or self.J_st_ud <= 0
+                or p_k <= self.p_0 or T_k <= 0):
+            raise ValueError("minimum exit pressure cannot be calculated")
+
         k1 = (self.k - 1) / self.k
         self.k1 = k1
         R = self.R
         J_st_ud = self.J_st_ud
-        p = self.p
-        fJr = lambda p_a: coefJ * J_st_ud * (0.67 - 0.016 * p_k + 0.163 * p_k ** 0.5) * np.sqrt(
-            (1 - (p_a / p_k) ** k1) * p_k ** k1 / (p_k ** k1 - 0.0981 ** k1))
-        fJ8 = lambda p_a: fJr(p_a) + R * T_k * (p_a / p_k) ** k1 / fJr(p_a)
-        f = lambda p_a: fJ8(p_a) - R * T_k * (p_a / p_k) ** k1 / fJr(p_a) * (p / p_a)
-        a = 20.0
-        for x0 in range(1, 100):
-            root, info, ier, msg = fsolve(f, x0 / 1000.0, full_output=True, maxfev=10000, xtol=1e-12)
-            if ier == 1:
-                a = float(root[0])
-        return a + 0.000000001
-        0.000000001
-        0.005861015066065835
-        0.005861015066
+        p_0 = self.p_0
+
+        def J_r(p_e):
+            radicand = (
+                (1 - (p_e / p_k) ** k1) * p_k ** k1
+                / (p_k ** k1 - p_0 ** k1)
+            )
+            return (
+                coefJ * J_st_ud
+                * (0.67 - 0.016 * p_k + 0.163 * p_k ** 0.5)
+                * np.sqrt(radicand)
+            )
+
+        def J_0(p_e):
+            J_r_value = J_r(p_e)
+            delta = R * T_k * (p_e / p_k) ** k1 / J_r_value
+            return J_r_value + delta - delta * (p_0 / p_e)
+
+        lower = max(np.finfo(float).eps * p_k, 1e-12)
+        root = brentq(J_0, lower, p_0, xtol=1e-12, rtol=1e-12)
+        return float(root) + 1e-9
 
     def calc_J_at_ambient(self, p_e, p_amb):
         delta = self.R * self.T_k * (p_e / self.p_k) ** self.k1 / self.J_r_ud
@@ -151,6 +165,23 @@ class Model:
 
     def compute_geometry(self, p_k, P_calc, coefJ, z_k, T_k, p_e, p_h=0.0981, calc_mode="sea_level"):
         # Convert the design inputs into specific impulse, mass flow, and nozzle dimensions.
+        if calc_mode not in ("sea_level", "vacuum"):
+            raise ValueError("unsupported design mode")
+        if (None in (self.k, self.R, self.J_st_ud, self.k_m)
+                or self.k <= 1 or self.R <= 0 or self.J_st_ud <= 0 or self.k_m <= 0):
+            raise ValueError("thermodynamic inputs are outside the method domain")
+        if p_k is None or not np.isfinite(p_k) or p_k <= self.p_0:
+            raise ValueError("combustion chamber pressure is outside the method domain")
+        if p_e is None or not np.isfinite(p_e) or not 0 < p_e < p_k:
+            raise ValueError("nozzle exit pressure must be between zero and chamber pressure")
+        if T_k is None or not np.isfinite(T_k) or T_k <= 0:
+            raise ValueError("combustion chamber temperature must be positive")
+        if z_k is None or not np.isfinite(z_k) or z_k <= 0:
+            raise ValueError("number of chambers must be positive")
+        if P_calc is None or not np.isfinite(P_calc) or P_calc <= 0:
+            raise ValueError("design thrust is non-positive")
+
+        p_h = 0.0 if calc_mode == "vacuum" else self.p_0
         self.p_k, self.P_calc, self.P_h = p_k, P_calc, P_calc
         self.coefJ, self.z_k, self.T_k = coefJ, z_k, T_k
         self.p_e, self.p_h, self.p_a = p_e, p_h, p_e
@@ -159,25 +190,52 @@ class Model:
         eps = self.p_e / self.p_k
 
         self.J_pr_ud_st = self.coefJ * self.J_st_ud
-        self.J_r_ud = self.J_pr_ud_st * (0.67 - 0.016 * self.p_k + 0.163 * self.p_k ** 0.5) * np.sqrt(
-            (1 - eps ** self.k1) * self.p_k ** self.k1 / (self.p_k ** self.k1 - 0.0981 ** self.k1))
+        impulse_radicand = (
+            (1 - eps ** self.k1) * self.p_k ** self.k1
+            / (self.p_k ** self.k1 - self.p_0 ** self.k1)
+        )
+        if impulse_radicand <= 0 or not np.isfinite(impulse_radicand):
+            raise ValueError("specific impulse radicand is non-positive")
+        self.J_r_ud = (
+            self.J_pr_ud_st
+            * (0.67 - 0.016 * self.p_k + 0.163 * self.p_k ** 0.5)
+            * np.sqrt(impulse_radicand)
+        )
+        if self.J_r_ud <= 0 or not np.isfinite(self.J_r_ud):
+            raise ValueError("specific impulse at design expansion is non-positive")
         self.J_8_ud = self.J_r_ud + self.R * self.T_k * eps ** self.k1 / self.J_r_ud
         self.J_0_ud = self.calc_J_at_ambient(self.p_e, self.p_0)
         self.J_h_ud = self.calc_J_at_ambient(self.p_e, self.p_h)
-        if self.J_h_ud <= 0:
+        self.J_calc_ud = self.J_h_ud
+        if self.J_calc_ud <= 0 or not np.isfinite(self.J_calc_ud):
             raise ValueError("specific impulse in selected design mode is non-positive")
-        self.m_ = self.P_calc / (self.z_k * self.J_h_ud)
+        self.m_ = self.P_calc / (self.z_k * self.J_calc_ud)
+        if self.m_ <= 0 or not np.isfinite(self.m_):
+            raise ValueError("propellant mass flow is non-positive")
         self.P_0 = self.m_ * self.z_k * self.J_0_ud
         self.P_8 = self.m_ * self.z_k * self.J_8_ud
-        self.P_h = self.m_ * self.z_k * self.J_h_ud
+        self.P_h = self.m_ * self.z_k * self.J_calc_ud
 
         self.m_g = self.m_ / (1 + self.k_m)
         self.m_ok = self.m_ * self.k_m / (1 + self.k_m)
         self.K_0 = (2 / (self.k + 1)) ** ((self.k + 1) / 2 / (self.k - 1)) * np.sqrt(self.k)
 
-        self.D_kr = np.sqrt(4 * self.m_ * np.sqrt(self.R * self.T_k) / (0.98 * np.pi * self.K_0 * self.p_k))
-        self.fa = (2 / (self.k + 1)) ** ((self.k + 1) / (2 * (self.k - 1))) * ((self.k - 1) / 2) ** 0.5 / np.sqrt(
-            (self.p_e / self.p_k) ** (2 / self.k) - (self.p_e / self.p_k) ** ((self.k + 1) / self.k))
+        throat_radicand = 4 * self.m_ * np.sqrt(self.R * self.T_k) / (0.98 * np.pi * self.K_0 * self.p_k)
+        if throat_radicand <= 0 or not np.isfinite(throat_radicand):
+            raise ValueError("critical-section diameter radicand is non-positive")
+        self.D_kr = np.sqrt(throat_radicand)
+
+        area_radicand = (
+            (self.p_e / self.p_k) ** (2 / self.k)
+            - (self.p_e / self.p_k) ** ((self.k + 1) / self.k)
+        )
+        if area_radicand <= 0 or not np.isfinite(area_radicand):
+            raise ValueError("nozzle area-ratio radicand is non-positive")
+        self.fa = (
+            (2 / (self.k + 1)) ** ((self.k + 1) / (2 * (self.k - 1)))
+            * ((self.k - 1) / 2) ** 0.5
+            / np.sqrt(area_radicand)
+        )
         self.D_a = self.D_kr * np.sqrt(self.fa)
         self.D_k = self.D_kr * 2
 
@@ -242,7 +300,8 @@ class Model:
         return {
             'D_kr': self.D_kr, 'D_a': self.D_a, 'D_k': self.D_k, 'f_a': self.fa,
             'J*_пр,уд,ст': self.J_pr_ud_st, 'J*_р,уд': self.J_r_ud,
-            'J*_h,уд': self.J_h_ud, 'J*_8,уд': self.J_8_ud, 'J*_0,уд': self.J_0_ud,
+            'J*_h,уд': self.J_h_ud, 'J*_calc,уд': self.J_calc_ud,
+            'J*_8,уд': self.J_8_ud, 'J*_0,уд': self.J_0_ud,
             'ṁ сум': self.m_, 'ṁ_г': self.m_g, 'ṁ_ок': self.m_ok, 'K0': self.K_0,
             'L_g': self.L_g, 'L_ц': self.L_cy, 'L_вх': self.L_vh, 'L_c': self.L_c, 'Lдв': self.L_dv
         }
