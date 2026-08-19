@@ -197,14 +197,18 @@ class Window(QMainWindow):
             lbl = QLabel(text)
             lbl.setWordWrap(True)
             lbl.setMinimumHeight(34)
-            lbl.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.MinimumExpanding)
+            lbl.setFixedWidth(LABEL_W)
+            lbl.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+            lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
-            grid.addWidget(lbl, r, 0, alignment=Qt.AlignLeft | Qt.AlignVCenter)
+            grid.addWidget(lbl, r, 0)
             grid.addWidget(widget, r, 1, alignment=Qt.AlignLeft | Qt.AlignVCenter)
             return lbl
 
         def add_help_row(r, text, widget):
             label_row = QWidget()
+            label_row.setFixedWidth(LABEL_W)
+            label_row.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
             label_layout = QHBoxLayout(label_row)
             label_layout.setContentsMargins(0, 0, 0, 0)
             label_layout.setSpacing(5)
@@ -212,7 +216,8 @@ class Window(QMainWindow):
             lbl = QLabel(text)
             lbl.setWordWrap(True)
             lbl.setMinimumHeight(34)
-            lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
+            lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             label_layout.addWidget(lbl, 1)
 
             btn_help = QPushButton("i")
@@ -222,7 +227,7 @@ class Window(QMainWindow):
             btn_help.clicked.connect(lambda _=False, b=btn_help: self._show_help_tooltip(b))
             label_layout.addWidget(btn_help, 0, Qt.AlignVCenter)
 
-            grid.addWidget(label_row, r, 0, alignment=Qt.AlignLeft | Qt.AlignVCenter)
+            grid.addWidget(label_row, r, 0)
             grid.addWidget(widget, r, 1, alignment=Qt.AlignLeft | Qt.AlignVCenter)
             return lbl, btn_help
 
