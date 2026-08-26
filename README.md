@@ -9,6 +9,9 @@
 Email: nckit@spaceres.kz<br>
 Website: https://spaceres.kz/
 
+**Developer contact:**<br>
+Yevgeniya Tleukhabylova — tleukhabylova@gmail.com
+
 Copyright © 2026 Joint-Stock Company “National Center of Space Research and Technology”.
 
 ## Features
