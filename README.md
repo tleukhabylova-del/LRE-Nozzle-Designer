@@ -2,6 +2,15 @@
 
 **LRE Nozzle Designer** is a desktop application for calculating liquid rocket engine parameters and nozzle geometry, plotting calculated distributions, and estimating thermal loads. The user interface is available in English and Russian.
 
+## Copyright holder and contact
+
+**Joint-Stock Company “National Center of Space Research and Technology”**<br>
+15 Shevchenko St., Almaty, 050010, Kazakhstan<br>
+Email: nckit@spaceres.kz<br>
+Website: https://spaceres.kz/
+
+Copyright © 2026 Joint-Stock Company “National Center of Space Research and Technology”.
+
 ## Features
 
 - propellant-pair selection;
