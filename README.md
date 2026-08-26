@@ -23,6 +23,20 @@ Copyright © 2026 Joint-Stock Company “National Center of Space Research and T
 - export of results to text, CSV, and Excel files;
 - light and dark interface themes.
 
+## Screenshots
+
+### Nozzle geometry
+
+![Dimensioned combustion chamber and nozzle geometry](docs/images/nozzle-geometry.png)
+
+### Mach number distribution
+
+![Mach number distribution along the nozzle](docs/images/mach-number-distribution.png)
+
+### Specific heat flux
+
+![Specific heat flux along the combustion wall](docs/images/thermal-heat-flux.png)
+
 ## Requirements
 
 - Windows 10 or 11;
