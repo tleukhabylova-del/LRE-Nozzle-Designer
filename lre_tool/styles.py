@@ -260,7 +260,7 @@ def apply_window_palette(window, mode: str):
             background: transparent;
         }}
 
-        #themeToggle, #languageToggle {{
+        #themeToggle, #languageToggle, #aboutButton {{
             border-radius: 14px;
             border: 2px solid {theme_border};
             padding: 0 10px;
@@ -269,13 +269,21 @@ def apply_window_palette(window, mode: str):
             background-color: {theme_bg};
             color: {theme_fg};
         }}
-        #themeToggle:hover, #languageToggle:hover {{
+        #themeToggle:hover, #languageToggle:hover, #aboutButton:hover {{
             border-color: {field_focus};
         }}
         #themeToggle:checked {{
             background-color: {"#121212" if mode == "dark" else "#6200EE"};
             color: {"#BB86FC" if mode == "dark" else "#FFFFFF"};
             border-color: {field_focus};
+        }}
+
+        #sideFooter {{
+            color: {"#E0D7F7" if mode == "dark" else "#F3EFFF"};
+            font-size: 11px;
+            font-weight: 400;
+            border-top: 1px solid {"rgba(224, 215, 247, 0.35)" if mode == "dark" else "rgba(243, 239, 255, 0.45)"};
+            padding-top: 10px;
         }}
 
         #winMin, #winClose, #winMax {{

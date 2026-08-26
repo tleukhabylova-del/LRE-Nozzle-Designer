@@ -55,6 +55,10 @@ from lre_tool.styles import apply_window_palette
 from lre_tool.validators import FlexibleDoubleValidator
 
 
+APP_VERSION = "1.1.0"
+VERSION_YEAR = "2026"
+
+
 # Keep unexpected GUI errors visible instead of silently terminating the application.
 def _except_hook(exctype, value, tb):
     import traceback
@@ -110,15 +114,6 @@ class Window(QMainWindow):
         vleft.setContentsMargins(14, 14, 14, 14)
         vleft.setSpacing(8)
 
-        self.side_title = QLabel("Navigation")
-        ft = self.side_title.font()
-        ft.setPointSize(10)
-        ft.setBold(True)
-        self.side_title.setFont(ft)
-        self.side_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        vleft.addWidget(self.side_title)
-        vleft.addSpacing(6)
-
         self.btn_page_main = QPushButton("Home");
         self.btn_page_main.setCheckable(True)
         self.btn_page_geom = QPushButton("Geometry");
@@ -139,6 +134,13 @@ class Window(QMainWindow):
             vleft.addWidget(b)
 
         vleft.addStretch(1)
+
+        self.lbl_side_footer = QLabel()
+        self.lbl_side_footer.setObjectName("sideFooter")
+        self.lbl_side_footer.setTextFormat(Qt.PlainText)
+        self.lbl_side_footer.setWordWrap(True)
+        self.lbl_side_footer.setAlignment(Qt.AlignLeft | Qt.AlignBottom)
+        vleft.addWidget(self.lbl_side_footer)
 
         # ===== Central page stack =====
         self.stack = QStackedWidget()
@@ -679,11 +681,193 @@ class Window(QMainWindow):
         pos = button.mapToGlobal(QtCore.QPoint(button.width() + 4, button.height() // 2))
         QToolTip.showText(pos, button.toolTip(), button)
 
+    def _show_about_dialog(self):
+        theme = "light"
+        if hasattr(self, "_settings"):
+            theme = self._settings.value("ui/theme", "light")
+        link_color = "#D6B8FF" if theme == "dark" else "#5B21B6"
+        link_style = (
+            "<style>"
+            f"a {{ color: {link_color}; text-decoration: underline; }}"
+            "</style>"
+        )
+
+        if self._language == "ru":
+            title = "О программе"
+            text = link_style + f"""
+                <h2>LRE Nozzle Designer</h2>
+                <p><b>Версия:</b> {APP_VERSION}<br>
+                <b>Год выпуска версии:</b> {VERSION_YEAR}</p>
+                <p><b>Правообладатель:</b><br>
+                АО «Национальный центр космических исследований и технологий»<br>
+                Казахстан, 050010, г. Алматы, ул. Шевченко, 15<br>
+                <b>Email:</b> <a href="mailto:nckit@spaceres.kz">nckit@spaceres.kz</a><br>
+                <b>Веб-сайт:</b> <a href="https://spaceres.kz/">https://spaceres.kz/</a></p>
+                <p><b>Авторы:</b><br>
+                Тлеухабылова Евгения Евгеньевна —
+                <a href="mailto:tleukhabylova@gmail.com">tleukhabylova@gmail.com</a><br>
+                Бейсенов Арлан Бауыржанұлы —
+                <a href="mailto:arlanbejsenov@gmail.com">arlanbejsenov@gmail.com</a></p>
+                <p>© {VERSION_YEAR} АО «НЦКИТ». Все права защищены.</p>
+            """
+        else:
+            title = "About"
+            text = link_style + f"""
+                <h2>LRE Nozzle Designer</h2>
+                <p><b>Version:</b> {APP_VERSION}<br>
+                <b>Version year:</b> {VERSION_YEAR}</p>
+                <p><b>Copyright holder:</b><br>
+                Joint-Stock Company “National Center of Space Research and Technology”<br>
+                15 Shevchenko St., Almaty, 050010, Kazakhstan<br>
+                <b>Email:</b> <a href="mailto:nckit@spaceres.kz">nckit@spaceres.kz</a><br>
+                <b>Website:</b> <a href="https://spaceres.kz/">https://spaceres.kz/</a></p>
+                <p><b>Authors:</b><br>
+                Yevgeniya Tleukhabylova —
+                <a href="mailto:tleukhabylova@gmail.com">tleukhabylova@gmail.com</a><br>
+                Arlan Beisenov —
+                <a href="mailto:arlanbejsenov@gmail.com">arlanbejsenov@gmail.com</a></p>
+                <p>© {VERSION_YEAR} JSC “National Center of Space Research and Technology”.
+                All rights reserved.</p>
+            """
+
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle(title)
+        dialog.setIcon(QMessageBox.Information)
+        dialog.setTextFormat(Qt.RichText)
+        dialog.setText(text)
+        dialog.setStandardButtons(QMessageBox.Ok)
+        dialog.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        dialog.exec_()
+
+    def _has_calculation_data(self):
+        input_edits = (self.ed_p_k, self.ed_p_a, self.ed_P_0, self.ed_P_8)
+        return (
+            any(edit.text().strip() for edit in input_edits)
+            or bool(self.txtParams.toPlainText().strip())
+            or self.x_curve is not None
+            or bool(self.page_thermal.ed_T_wall_material_max.text().strip())
+        )
+
+    def on_new_calculation(self):
+        mach_calculation_running = False
+        if hasattr(self, "_m_thread"):
+            try:
+                mach_calculation_running = self._m_thread.isRunning()
+            except RuntimeError:
+                mach_calculation_running = False
+        if mach_calculation_running:
+            QMessageBox.information(
+                self,
+                self._tr("Calculation in progress", "Выполняется расчёт"),
+                self._tr(
+                    "Wait for the Mach-number calculation to finish before starting a new calculation.",
+                    "Дождитесь завершения расчёта числа Маха перед началом нового расчёта.",
+                ),
+            )
+            return
+
+        if self._has_calculation_data():
+            dialog = QMessageBox(self)
+            dialog.setWindowTitle(self._tr("New calculation", "Новый расчёт"))
+            dialog.setIcon(QMessageBox.Question)
+            dialog.setText(self._tr(
+                "Start a new calculation? All entered data and calculated results will be cleared.",
+                "Начать новый расчёт? Все введённые данные и рассчитанные результаты будут очищены.",
+            ))
+            new_button = dialog.addButton(
+                self._tr("New calculation", "Новый расчёт"), QMessageBox.AcceptRole
+            )
+            cancel_button = dialog.addButton(QMessageBox.Cancel)
+            dialog.setDefaultButton(cancel_button)
+            dialog.exec_()
+            if dialog.clickedButton() is not new_button:
+                return
+
+        self.timer.stop()
+        self.model = Model()
+        fresh_geometry = GeometryState()
+        for name, value in vars(fresh_geometry).items():
+            setattr(self.geometry_state, name, value)
+
+        with QtCore.QSignalBlocker(self.cbFuel):
+            self.cbFuel.setCurrentIndex(0)
+        fuel_idx = self.cbFuel.itemData(0) or 1
+        self.model.set_fuel(fuel_idx)
+
+        for attr, edit in self._std_fields.items():
+            value = getattr(self.model, attr, None)
+            with QtCore.QSignalBlocker(edit):
+                edit.setText("" if value is None else f"{float(value):.6g}")
+
+        fields_to_clear = (
+            self.ed_p_k, self.ed_p_a, self.ed_P_0, self.ed_P_8,
+            self.ed_T_k, self.ed_Jpr, self.ed_Jr, self.ed_J0,
+        )
+        for edit in fields_to_clear:
+            with QtCore.QSignalBlocker(edit):
+                edit.clear()
+
+        with QtCore.QSignalBlocker(self.cb_calc_mode):
+            self.cb_calc_mode.setCurrentIndex(0)
+        self._calc_mode = "sea_level"
+        self._thrust_source = "P_0"
+        self._overridden.clear()
+        self.min_pa = None
+        self._set_pa_validator(0.0)
+        self.ed_z_k.setText("1")
+
+        self._last_report_args = None
+        self._last_report_text = ""
+        self.txtParams.clear()
+        self.x_curve = None
+        self.y_curve = None
+        self.M = None
+        self.T = None
+        self.P = None
+
+        for name in ("T_wall_material_max", "T_gas_wall", "S_gas_wall", "Q", "heat_load_table"):
+            setattr(self, name, None)
+        self.page_thermal.ed_T_wall_material_max.clear()
+        self.page_thermal.clear_results()
+        self.page_thermal.scroll_area.verticalScrollBar().setValue(0)
+
+        for page in (self.page_geom, self.page_M, self.page_T, self.page_P):
+            page.plot.clear()
+            if page.info_box is not None:
+                page.info_box.clear()
+            if page.points_box is not None:
+                page.points_box.clear()
+            if page.search_value is not None:
+                page.search_value.clear()
+            if page.hover_label is not None:
+                page.hover_label.setText(self._tr(
+                    "x = -    |    R = -    |    value = -",
+                    "x = -    |    R = -    |    значение = -",
+                ))
+
+        self.page_geom.btn_calc.setEnabled(True)
+        self.page_M.btn_calc.setEnabled(False)
+        self.page_T.btn_calc.setEnabled(False)
+        self.page_P.btn_calc.setEnabled(False)
+        self.progressBar.setVisible(False)
+        self.progressBar.setValue(0)
+        self._update_nozzle_status()
+        self._goto(0, self.btn_page_main)
+        self.statusbar.showMessage(
+            self._tr("New calculation started.", "Начат новый расчёт."), 3000
+        )
+
     def _apply_language(self):
         tr = self._tr
         self.btn_language.setText("eng" if self._language == "ru" else "рус")
         self.btn_language.setToolTip(tr("Switch language", "Сменить язык"))
-        self.side_title.setText(tr("Navigation", "Навигация"))
+        self.btn_about.setToolTip(tr("About", "О программе"))
+        organization = tr("JSC NCSRTE", "АО НЦКИТ")
+        self.lbl_side_footer.setText(
+            f"© {VERSION_YEAR} {organization}\n"
+            f"LRE Nozzle Designer {APP_VERSION}\n"
+            "spaceres.kz"
+        )
         self.btn_page_main.setText(tr("Home", "Главная"))
         self.btn_page_geom.setText(tr("Geometry", "Геометрия"))
         self.btn_page_M.setText(tr("Mach number", "Число Маха"))
@@ -791,8 +975,14 @@ class Window(QMainWindow):
             (tr("Calculate geometry and update the report", "Рассчитать геометрию и обновить отчет"))
         self.act_geom.setText(tr("Drawing (Ctrl+D)", "Чертеж (Ctrl+D)"))
         self.act_geom.setStatusTip(tr("Show the nozzle drawing", "Показать чертеж сопла"))
+        self.act_new.setText(tr("New calculation (Ctrl+N)", "Новый расчёт (Ctrl+N)"))
+        self.act_new.setStatusTip(tr(
+            "Clear inputs and results and start a new calculation",
+            "Очистить исходные данные и результаты и начать новый расчёт",
+        ))
         self.btn_tb_open.setToolTip(tr("Auto-fill... (Ctrl+L)", "Автозаполнение... (Ctrl+L)"))
         self.btn_tb_save.setToolTip(tr("Save... (Ctrl+S)", "Сохранить... (Ctrl+S)"))
+        self.btn_tb_new.setToolTip(tr("New calculation (Ctrl+N)", "Новый расчёт (Ctrl+N)"))
         self.btn_themeToggle.setToolTip(tr("Toggle light/dark theme", "Переключить светлую/темную тему"))
         self._update_max_button_icon()
         self._refresh_fuel_names()
@@ -945,13 +1135,27 @@ class Window(QMainWindow):
         self.act_geom.triggered.connect(self.on_draw_geom)
         self.addAction(self.act_geom)
 
+        self.act_new = QAction("New calculation (Ctrl+N)", self)
+        self.act_new.setShortcut("Ctrl+N")
+        self.act_new.triggered.connect(self.on_new_calculation)
+        self.addAction(self.act_new)
+
         # --- Toolbar content grouped into a single widget ---
         wrap = QWidget()
         lay = QHBoxLayout(wrap)
         lay.setContentsMargins(6, 0, 6, 0)
         lay.setSpacing(10)
 
-        # 1) Open button.
+        # 1) New-calculation button.
+        self.btn_tb_new = QPushButton()
+        self.btn_tb_new.setIcon(s.standardIcon(s.SP_FileIcon))
+        self.btn_tb_new.setFlat(True)
+        self.btn_tb_new.setToolTip("New calculation (Ctrl+N)")
+        self.btn_tb_new.clicked.connect(self.on_new_calculation)
+        self.btn_tb_new.setFixedSize(26, 24)
+        lay.addWidget(self.btn_tb_new)
+
+        # 2) Open button.
         self.btn_tb_open = QPushButton()
         self.btn_tb_open.setIcon(s.standardIcon(s.SP_DialogOpenButton))
         self.btn_tb_open.setFlat(True)
@@ -960,7 +1164,7 @@ class Window(QMainWindow):
         self.btn_tb_open.setFixedSize(26, 24)
         lay.addWidget(self.btn_tb_open)
 
-        # 2) Save button.
+        # 3) Save button.
         self.btn_tb_save = QPushButton()
         self.btn_tb_save.setIcon(s.standardIcon(s.SP_DialogSaveButton))
         self.btn_tb_save.setFlat(True)
@@ -969,7 +1173,7 @@ class Window(QMainWindow):
         self.btn_tb_save.setFixedSize(26, 24)
         lay.addWidget(self.btn_tb_save)
 
-        # 3) Theme toggle.
+        # 4) Theme toggle.
         self.btn_themeToggle = QPushButton("☀")
         self.btn_themeToggle.setObjectName("themeToggle")
         self.btn_themeToggle.setCheckable(True)
@@ -979,7 +1183,7 @@ class Window(QMainWindow):
         self.btn_themeToggle.toggled.connect(self._on_theme_toggled)
         lay.addWidget(self.btn_themeToggle)
 
-        # 4) Language selector
+        # 5) Language selector
         self.btn_language = QPushButton("рус")
         self.btn_language.setObjectName("languageToggle")
         self.btn_language.setCursor(Qt.PointingHandCursor)
@@ -988,10 +1192,19 @@ class Window(QMainWindow):
         self.btn_language.clicked.connect(self._toggle_language)
         lay.addWidget(self.btn_language)
 
-        # 5) Spacer to the left of the title.
+        # 6) About button.
+        self.btn_about = QPushButton("i")
+        self.btn_about.setObjectName("aboutButton")
+        self.btn_about.setCursor(Qt.PointingHandCursor)
+        self.btn_about.setFixedSize(30, 26)
+        self.btn_about.setToolTip("About")
+        self.btn_about.clicked.connect(self._show_about_dialog)
+        lay.addWidget(self.btn_about)
+
+        # 7) Spacer to the left of the title.
         lay.addStretch(1)
 
-        # 6) Application title.
+        # 8) Application title.
         self.lbl_title = QLabel("LRE Nozzle Designer")
         f = self.lbl_title.font()
         f.setPointSize(12)
@@ -1003,7 +1216,7 @@ class Window(QMainWindow):
 
         lay.addStretch(1)
 
-        # 7) Window controls on the right.
+        # 9) Window controls on the right.
         buttons_wrap = QWidget()
         hb = QHBoxLayout(buttons_wrap)
         hb.setContentsMargins(12, 0, 0, 0)

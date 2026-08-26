@@ -17,6 +17,44 @@
 - Python 3.12;
 - the packages listed in `requirements.txt`.
 
+## Open-source components and data provenance
+
+LRE Nozzle Designer was developed using open-source components from the
+Python scientific ecosystem. These components remain subject to their own
+licenses and are not relicensed by this project:
+
+- [Python](https://www.python.org/) - PSF License;
+- [NumPy](https://numpy.org/) - BSD 3-Clause License;
+- [pandas](https://pandas.pydata.org/) - BSD 3-Clause License;
+- [SciPy](https://scipy.org/) - BSD 3-Clause License;
+- [Matplotlib](https://matplotlib.org/) - PSF-based Matplotlib License;
+- [openpyxl](https://openpyxl.readthedocs.io/) - MIT License;
+- [PyQt5](https://www.riverbankcomputing.com/software/pyqt/) - GNU GPL v3
+  or Riverbank Commercial License.
+
+The engineering equations, constants, and reference values used by the
+application were compiled from publicly available technical and educational
+sources and then implemented and checked by the authors. The bundled thermal
+reference files (`q0_digitized_reference_table.csv` and the `pair */` data
+directories) contain author-prepared digitizations of the reference curves in
+Figures 5-10 of the following educational publication:
+
+> L. I. Grechukh and I. N. Grechukh, *Design of a Liquid Rocket Engine*
+> (`Проектирование жидкостного ракетного двигателя`), methodological guidance
+> for course and diploma design, Omsk State Technical University, Omsk, 2011,
+> pp. 24-34.
+
+The publication is listed by
+[Omsk State Technical University](https://omgtu.ru/general_information/faculties/faculty_of_transport_oil_and_gas/the_department_quot_aviation_and_rocket_quot/teaching_staff/l_grech.php).
+The reference datasets are used for research, educational, and verification
+purposes and are not presented as original experimental measurements. Public
+availability of a source does not by itself mean that the source is in the
+public domain or distributed under an open-data license. Redistribution of
+the application, its bundled data, and binary builds must comply with the
+applicable licenses and source-material terms. Exact third-party notices
+should be generated for the dependency versions included in each binary
+release.
+
 ## Installation
 
 1. Download or clone the repository.
