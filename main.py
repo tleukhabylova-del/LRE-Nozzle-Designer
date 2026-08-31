@@ -55,7 +55,7 @@ from lre_tool.styles import apply_window_palette
 from lre_tool.validators import FlexibleDoubleValidator
 
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 VERSION_YEAR = "2026"
 
 
@@ -652,23 +652,33 @@ class Window(QMainWindow):
     def _tr(self, english, russian):
         return russian if self._language == "ru" else english
 
-    def _fuel_name(self, idx):
-        if self._language == "ru" and idx < len(PARA_RU) and PARA[idx] == PARA_DEFAULT[idx]:
-            return PARA_RU[idx].strip()
-        return PARA[idx].strip()
+    def _fuel_name(self, fuel_idx):
+        """Return a localized name for the one-based propellant-pair ID."""
+        if not 1 <= fuel_idx <= len(PARA):
+            raise IndexError(f"propellant-pair ID is out of range: {fuel_idx}")
+        name_idx = fuel_idx - 1
+        if (
+            self._language == "ru"
+            and PARA[name_idx] == PARA_DEFAULT[name_idx]
+        ):
+            return PARA_RU[name_idx].strip()
+        return PARA[name_idx].strip()
 
     def _refresh_fuel_names(self):
         current_idx = self.cbFuel.currentIndex()
         with QtCore.QSignalBlocker(self.cbFuel):
             for i in range(self.cbFuel.count()):
-                if i < len(PARA):
-                    self.cbFuel.setItemText(i, self._fuel_name(i))
+                fuel_idx = self.cbFuel.itemData(i)
+                if fuel_idx is not None:
+                    self.cbFuel.setItemText(i, self._fuel_name(int(fuel_idx)))
             self.cbFuel.setCurrentIndex(current_idx)
 
         if hasattr(self, "list_fuels") and self.list_fuels is not None:
             for row in range(self.list_fuels.count()):
-                fuel_idx = row + 1
-                if fuel_idx < len(PARA):
+                item = self.list_fuels.item(row)
+                fuel_idx = item.data(Qt.UserRole)
+                if fuel_idx is not None:
+                    fuel_idx = int(fuel_idx)
                     self.list_fuels.item(row).setText(self._fuel_name(fuel_idx))
 
     def _toggle_language(self):

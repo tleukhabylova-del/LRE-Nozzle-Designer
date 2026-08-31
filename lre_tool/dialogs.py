@@ -113,8 +113,10 @@ def open_fuel_parameters_dialog(window):
     window.list_fuels.setMinimumWidth(400)
     window.list_fuels.setMinimumHeight(270)
 
-    for fuel_idx in range(1, len(PARA)):
+    for combo_row in range(window.cbFuel.count()):
+        fuel_idx = int(window.cbFuel.itemData(combo_row))
         window.list_fuels.addItem(window._fuel_name(fuel_idx))
+        window.list_fuels.item(window.list_fuels.count() - 1).setData(Qt.UserRole, fuel_idx)
 
     left_layout.addLayout(top_left)
     left_layout.addWidget(window.list_fuels)
@@ -188,7 +190,7 @@ def open_fuel_parameters_dialog(window):
         if row_idx < 0:
             return
 
-        fuel_idx = row_idx + 1
+        fuel_idx = int(window.list_fuels.item(row_idx).data(Qt.UserRole))
 
         window.ed_selected_fuel_name.setText(window._fuel_name(fuel_idx))
         window.ed_fuel_name.setText(window._fuel_name(fuel_idx))
@@ -204,7 +206,7 @@ def open_fuel_parameters_dialog(window):
         if row_idx < 0:
             return
 
-        fuel_idx = row_idx + 1
+        fuel_idx = int(window.list_fuels.item(row_idx).data(Qt.UserRole))
         name = window.ed_fuel_name.text().strip()
 
         if not name:
@@ -224,9 +226,10 @@ def open_fuel_parameters_dialog(window):
                                          "Проверьте числовые параметры топлива."))
             return
 
-        PARA[fuel_idx] = name
-        PARA_DEFAULT[fuel_idx] = name
-        PARA_RU[fuel_idx] = name
+        name_idx = fuel_idx - 1
+        PARA[name_idx] = name
+        PARA_DEFAULT[name_idx] = name
+        PARA_RU[name_idx] = name
         k_m_list[fuel_idx] = km
         R_st_list[fuel_idx] = R
         k_st_list[fuel_idx] = k
@@ -236,8 +239,10 @@ def open_fuel_parameters_dialog(window):
         window.list_fuels.item(row_idx).setText(name)
         window.ed_selected_fuel_name.setText(name)
 
-        window.cbFuel.setItemText(row_idx, name)
-        window.cbFuel.setCurrentIndex(row_idx)
+        combo_row = window.cbFuel.findData(fuel_idx)
+        if combo_row >= 0:
+            window.cbFuel.setItemText(combo_row, name)
+            window.cbFuel.setCurrentIndex(combo_row)
 
         window.on_change()
         window.timer.start()
@@ -251,7 +256,7 @@ def open_fuel_parameters_dialog(window):
         if row_idx < 0:
             return
 
-        fuel_idx = row_idx + 1
+        fuel_idx = int(window.list_fuels.item(row_idx).data(Qt.UserRole))
 
         reply = QMessageBox.question(
             window,
@@ -263,20 +268,10 @@ def open_fuel_parameters_dialog(window):
         if reply != QMessageBox.Yes:
             return
 
-        del PARA[fuel_idx]
-        del PARA_DEFAULT[fuel_idx]
-        del PARA_RU[fuel_idx]
-        del k_m_list[fuel_idx]
-        del R_st_list[fuel_idx]
-        del k_st_list[fuel_idx]
-        del T_st_list[fuel_idx]
-        del J_st_list[fuel_idx]
-
         window.list_fuels.takeItem(row_idx)
-
-        window.cbFuel.clear()
-        for i, name in enumerate(PARA[1:], start=1):
-            window.cbFuel.addItem(window._fuel_name(i), i)
+        combo_row = window.cbFuel.findData(fuel_idx)
+        if combo_row >= 0:
+            window.cbFuel.removeItem(combo_row)
 
         if window.list_fuels.count() > 0:
             new_row = min(row_idx, window.list_fuels.count() - 1)
