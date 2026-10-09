@@ -461,3 +461,118 @@ class Model:
         ]
 
         return x_contour, y_contour, X, Y
+
+    def take_x_y_for_export(self):
+        """Return a reduced contour while preserving every geometric segment boundary."""
+        x_head0 = -(self.L_g + self.L_cy + self.L_vh)
+        x_cyl0 = -(self.L_cy + self.L_vh)
+        x_conv0 = -self.L_vh
+
+        O0 = np.array([self.R0, 0.0])
+        O1 = np.array([self.L_g, self.R_k - self.R1])
+        B_head = np.array([
+            self.R0 * (1 - np.sin(self.gamma)),
+            self.R0 * np.cos(self.gamma),
+        ])
+        C_head = np.array([
+            O1[0] - self.R1 * np.sin(self.gamma),
+            O1[1] + self.R1 * np.cos(self.gamma),
+        ])
+
+        t0 = np.linspace(np.pi, np.pi / 2 + self.gamma, 10)
+        t1 = np.linspace(np.pi / 2 + self.gamma, np.pi / 2, 10)
+        head_arc0 = np.column_stack([
+            x_head0 + O0[0] + self.R0 * np.cos(t0),
+            O0[1] + self.R0 * np.sin(t0),
+        ])
+        head_line = np.array([
+            [x_head0 + B_head[0], B_head[1]],
+            [x_head0 + C_head[0], C_head[1]],
+        ])
+        head_arc1 = np.column_stack([
+            x_head0 + O1[0] + self.R1 * np.cos(t1),
+            O1[1] + self.R1 * np.sin(t1),
+        ])
+
+        chamber_line = np.array([
+            [x_cyl0, self.R_k],
+            [x_conv0, self.R_k],
+        ])
+
+        d = self.R_k - self.R_kr
+        O2 = np.array([0.0, d - self.R2])
+        O3 = np.array([self.L_vh, self.R3])
+        P2 = np.array([
+            O2[0] + self.R2 * np.sin(self.betta),
+            O2[1] + self.R2 * np.cos(self.betta),
+        ])
+        P3 = np.array([
+            O3[0] - self.R3 * np.sin(self.betta),
+            O3[1] - self.R3 * np.cos(self.betta),
+        ])
+        t2 = np.linspace(np.pi / 2, np.pi / 2 - self.betta, 10)
+        t3 = np.linspace(3 * np.pi / 2 - self.betta, 3 * np.pi / 2, 10)
+        conv_arc2 = np.column_stack([
+            x_conv0 + O2[0] + self.R2 * np.cos(t2),
+            self.R_kr + O2[1] + self.R2 * np.sin(t2),
+        ])
+        conv_line = np.array([
+            [x_conv0 + P2[0], self.R_kr + P2[1]],
+            [x_conv0 + P3[0], self.R_kr + P3[1]],
+        ])
+        conv_arc3 = np.column_stack([
+            x_conv0 + O3[0] + self.R3 * np.cos(t3),
+            self.R_kr + O3[1] + self.R3 * np.sin(t3),
+        ])
+
+        B_div = np.array([
+            self.R3 * np.sin(self.alpha1),
+            self.R3 * (1 - np.cos(self.alpha1)),
+        ])
+        C_div = B_div + self.a * np.array([
+            np.cos(self.alpha1), np.sin(self.alpha1),
+        ])
+        O4 = np.array([
+            C_div[0] + self.R4 * np.sin(self.alpha1),
+            C_div[1] - self.R4 * np.cos(self.alpha1),
+        ])
+        D_div = O4 + np.array([
+            -self.R4 * np.sin(self.alpha2),
+            self.R4 * np.cos(self.alpha2),
+        ])
+        E_div = D_div + self.a * np.array([
+            np.cos(self.alpha2), np.sin(self.alpha2),
+        ])
+
+        t4 = np.linspace(-np.pi / 2, -np.pi / 2 + self.alpha1, 10)
+        t5 = np.linspace(np.pi / 2 + self.alpha1, np.pi / 2 + self.alpha2, 20)
+        div_arc3 = np.column_stack([
+            self.R3 * np.cos(t4),
+            self.R_kr + self.R3 + self.R3 * np.sin(t4),
+        ])
+        div_line1 = np.array([
+            [B_div[0], self.R_kr + B_div[1]],
+            [C_div[0], self.R_kr + C_div[1]],
+        ])
+        div_arc4 = np.column_stack([
+            O4[0] + self.R4 * np.cos(t5),
+            self.R_kr + O4[1] + self.R4 * np.sin(t5),
+        ])
+        div_line2 = np.array([
+            [D_div[0], self.R_kr + D_div[1]],
+            [E_div[0], self.R_kr + E_div[1]],
+        ])
+
+        points = []
+        for segment in (
+            head_arc0, head_line, head_arc1, chamber_line,
+            conv_arc2, conv_line, conv_arc3,
+            div_arc3, div_line1, div_arc4, div_line2,
+        ):
+            for point in segment:
+                if not points or not np.allclose(point, points[-1], rtol=0.0, atol=1e-10):
+                    points.append(np.asarray(point, dtype=float))
+
+        contour = np.asarray(points, dtype=float)
+        contour[:, 0] -= np.min(contour[:, 0])
+        return contour[:, 0], contour[:, 1]

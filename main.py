@@ -9,7 +9,7 @@ import pandas as pd
 from PyQt5.QtWidgets import QSizePolicy
 from PyQt5 import QtCore
 from PyQt5.QtCore import Qt, QTimer, QEvent, QLocale
-from PyQt5.QtGui import QDoubleValidator, QFont, QColor, QPalette
+from PyQt5.QtGui import QDoubleValidator, QIntValidator, QFont, QColor, QPalette
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QGridLayout, QVBoxLayout,
     QLabel, QLineEdit, QComboBox, QMessageBox, QCheckBox, QHBoxLayout, QPushButton,
@@ -39,6 +39,7 @@ from lre_tool.constants import (
     PARA_DEFAULT, PARA_RU, R_st_list, T_st_list, k_m_list, k_st_list,
 )
 from lre_tool.dialogs import open_fuel_parameters_dialog
+from lre_tool.inverse_dialog import open_inverse_nozzle_dialog
 from lre_tool.mach import MWorker
 from lre_tool.model import GeometryState, Model
 from lre_tool.pages import GraphPage, ThermalPage
@@ -396,11 +397,20 @@ class Window(QMainWindow):
         grid = advanced_grid
         row = 0
 
-        self.ed_z_k = QLineEdit();
+        self.ed_coefJ = QLineEdit()
+        self.ed_coefJ.setFixedWidth(FIELD_W)
+        self.ed_coefJ.setMinimumHeight(26)
+        self.ed_coefJ.setText(f"{COEF_J_DEFAULT:g}")
+        self.lbl_coefJ = add_row(row, "Specific impulse coefficient J_coef", self.ed_coefJ)
+        row += 1
+
+        self.ed_z_k = QLineEdit()
+        self.ed_z_k.setFixedWidth(FIELD_W)
+        self.ed_z_k.setMinimumHeight(26)
+        self.ed_z_k.setValidator(QIntValidator(1, 999, self.ed_z_k))
         self.ed_z_k.setText("1")
-        self.ed_z_k.hide()
-        self.lbl_z_k = QLabel("Number of combustion chambers N_c")
-        self.lbl_z_k.hide()
+        self.lbl_z_k = add_row(row, "Number of combustion chambers N_c", self.ed_z_k)
+        row += 1
 
         # ===== Automatically calculated fields =====
         self.ed_T_k = QLineEdit();
@@ -439,6 +449,11 @@ class Window(QMainWindow):
         self.btn_calc_params.setMinimumHeight(32)
         self.btn_calc_params.setMinimumWidth(FIELD_W)
 
+        self.btn_inverse_calc = QPushButton("Nozzle Analysis")
+        self.btn_inverse_calc.clicked.connect(self.open_inverse_nozzle_dialog)
+        self.btn_inverse_calc.setMinimumHeight(32)
+        self.btn_inverse_calc.setMinimumWidth(FIELD_W)
+
         # --- Scroll area containing only inputsWidget ---
         scroll_inputs = QScrollArea()
         scroll_inputs.setWidgetResizable(True)
@@ -457,7 +472,13 @@ class Window(QMainWindow):
         vLeftColumn.setSpacing(8)
         vLeftColumn.addWidget(scroll_inputs)
         vLeftColumn.addSpacing(12)
-        vLeftColumn.addWidget(self.btn_calc_params, 0, Qt.AlignRight)
+        calculation_buttons = QHBoxLayout()
+        calculation_buttons.setContentsMargins(0, 0, 0, 0)
+        calculation_buttons.setSpacing(8)
+        calculation_buttons.addStretch(1)
+        calculation_buttons.addWidget(self.btn_inverse_calc)
+        calculation_buttons.addWidget(self.btn_calc_params)
+        vLeftColumn.addLayout(calculation_buttons)
 
         # ===== Manual-override tracking and signal connections =====
         self._auto_fields = {
@@ -470,6 +491,8 @@ class Window(QMainWindow):
         }
         self._user_fields = {
             "p_k": self.ed_p_k,
+            "coefJ": self.ed_coefJ,
+            "z_k": self.ed_z_k,
             "P_0": self.ed_P_0,
             "P_8": self.ed_P_8
         }
@@ -610,7 +633,7 @@ class Window(QMainWindow):
         # Input filter for numeric fields.
         self._all_numeric_edits = [
             self.ed_k_m, self.ed_R, self.ed_k, self.ed_Tst, self.ed_Jst,
-            self.ed_p_k, self.ed_P_0, self.ed_P_8,
+            self.ed_p_k, self.ed_coefJ, self.ed_z_k, self.ed_P_0, self.ed_P_8,
             self.ed_T_k, self.ed_p_a, self.ed_Jpr, self.ed_Jr, self.ed_J0
         ]
         for ed in self._all_numeric_edits:
@@ -824,6 +847,7 @@ class Window(QMainWindow):
         self._overridden.clear()
         self.min_pa = None
         self._set_pa_validator(0.0)
+        self.ed_coefJ.setText(f"{COEF_J_DEFAULT:g}")
         self.ed_z_k.setText("1")
 
         self._last_report_args = None
@@ -931,6 +955,7 @@ class Window(QMainWindow):
             + "</div>"
         )
         self.lbl_z_k.setText(tr("Number of combustion chambers N_c", "Число камер сгорания N_c"))
+        self.lbl_coefJ.setText(tr("Specific impulse coefficient J_coef", "Коэффициент удельного импульса J_coef"))
         self.lbl_T_k.setText(tr("Chamber temperature T_c", "Температура продуктов в камере T_c"))
         self.lbl_p_a.setText(tr("Nozzle exit pressure p_e", "Давление на срезе сопла p_e"))
         self.lbl_Jpr.setText \
@@ -955,6 +980,10 @@ class Window(QMainWindow):
                    self.ed_T_k, self.ed_p_a, self.ed_Jpr, self.ed_Jr, self.ed_J0):
             ed._reposition_unit()
         self.btn_calc_params.setText(tr("Calculate engine and nozzle", "Рассчитать двигатель и сопло"))
+        self.btn_inverse_calc.setText(tr(
+            "Nozzle Analysis",
+            "Анализ готового сопла",
+        ))
 
         self.page_geom.plot.title = tr("Nozzle geometry", "Геометрия сопла")
         self.page_geom.btn_calc.setText(tr("Show drawing", "Вывести чертеж"))
@@ -997,6 +1026,10 @@ class Window(QMainWindow):
         self._update_max_button_icon()
         self._refresh_fuel_names()
         self._update_nozzle_status()
+
+        inverse_dialog = getattr(self, "_inverse_dialog", None)
+        if inverse_dialog is not None:
+            inverse_dialog.retranslate_ui()
 
         if self._last_report_args is not None:
             self._fill_params_text(*self._last_report_args)
@@ -1053,6 +1086,9 @@ class Window(QMainWindow):
 
     def open_fuel_params_dialog(self):
         open_fuel_parameters_dialog(self)
+
+    def open_inverse_nozzle_dialog(self):
+        open_inverse_nozzle_dialog(self)
 
 
     def eventFilter(self, obj, event):
@@ -1769,7 +1805,10 @@ class Window(QMainWindow):
         if None in (p_k, T_k) or p_k <= 0 or T_k <= 0:
             return p_e
         try:
-            pmin = self.model.min_p_a(COEF_J_DEFAULT, p_k, T_k)
+            coefJ = self._v(self.ed_coefJ)
+            if coefJ is None or coefJ <= 0:
+                return p_e
+            pmin = self.model.min_p_a(coefJ, p_k, T_k)
         except Exception:
             return p_e
         if pmin is None or not np.isfinite(pmin):
@@ -1807,9 +1846,8 @@ class Window(QMainWindow):
         p_k = fnum(self.ed_p_k)
         thrust_source, thrust_value = self._current_thrust_input()
         P_calc = thrust_value
-        coefJ = COEF_J_DEFAULT
-        z_k = 1.0
-        self.ed_z_k.setText("1")
+        coefJ = fnum(self.ed_coefJ)
+        z_k = fnum(self.ed_z_k)
         cur_Tk = fnum(self.ed_T_k)
 
         # In full automatic mode, always calculate T_k from the correlation.
@@ -1825,10 +1863,10 @@ class Window(QMainWindow):
         p_h = self._current_p_h()
         p_e = self._apply_min_p_e_if_needed(p_k, cur_Tk, p_e, p_h)
 
-        if any(v is None for v in [p_k, thrust_value, z_k, cur_Tk, p_e]):
+        if any(v is None for v in [p_k, thrust_value, coefJ, z_k, cur_Tk, p_e]):
             QMessageBox.warning(self, self._tr("Input", "Ввод"),
-                                self._tr("Fill in p_c, p_e, P_SL or P_inf, and T_c first.",
-                                         "Сначала заполните p_c, p_e, P_SL или P_inf и T_c."))
+                                self._tr("Fill in p_c, p_e, J_coef, N_c, P_SL or P_inf, and T_c first.",
+                                         "Сначала заполните p_c, p_e, J_coef, N_c, P_SL или P_inf и T_c."))
             return
 
         checks = [
@@ -1844,8 +1882,12 @@ class Window(QMainWindow):
                                   "Давление на срезе должно быть меньше давления в камере.")),
             (cur_Tk <= 0, self._tr("Combustion chamber temperature must be positive.",
                                    "Температура в камере должна быть положительной.")),
+            (not 0 < coefJ <= 1, self._tr("J_coef must be greater than zero and no greater than one.",
+                                          "J_coef должен быть больше нуля и не больше единицы.")),
             (z_k <= 0, self._tr("The number of chambers must be positive.",
                                 "Количество камер должно быть положительным.")),
+            (not float(z_k).is_integer(), self._tr("The number of chambers must be an integer.",
+                                                   "Количество камер должно быть целым числом.")),
         ]
         for failed, message in checks:
             if failed:
@@ -1990,6 +2032,10 @@ class Window(QMainWindow):
         add_row(rows, inputs, self._tr("Sea-level thrust P_SL", "Тяга на уровне моря P_SL"), self.model.P_0, unit_n)
         add_row(rows, inputs, self._tr("Vacuum thrust P_inf", "Тяга в вакууме P_inf"), self.model.P_8, unit_n)
         add_row(rows, inputs, self._tr("Chamber pressure p_c", "Давление в камере сгорания p_c"), p_k, unit_mpa)
+        add_row(rows, inputs, self._tr("Specific impulse coefficient J_coef", "Коэффициент удельного импульса J_coef"),
+                self.model.coefJ)
+        add_row(rows, inputs, self._tr("Number of combustion chambers N_c", "Число камер сгорания N_c"),
+                self.model.z_k)
         add_row(rows, inputs, self._tr("Nozzle exit pressure p_e", "Давление на срезе сопла p_e"), p_a, unit_mpa)
         add_row(rows, inputs, self._tr("Selected-mode ambient pressure p_amb",
                                        "Давление окружающей среды выбранного режима p_amb"),
@@ -3206,7 +3252,8 @@ class Window(QMainWindow):
             self._set_if_present(self.ed_P_0, params.get("P_0_N") or params.get("P_calc_N") or params.get("P_h_N"))
             self._set_if_present(self.ed_P_8, params.get("P_8_N"))
             self._thrust_source = "P_8" if mode_idx == 1 else "P_0"
-            self.ed_z_k.setText("1")
+            self._set_if_present(self.ed_coefJ, params.get("coefJ") or f"{COEF_J_DEFAULT:g}")
+            self._set_if_present(self.ed_z_k, params.get("z_k") or "1")
             self._set_if_present(self.ed_T_k, params.get("T_k_K"))
             self._set_if_present(self.ed_p_a, params.get("p_e_MPa") or params.get("p_a_MPa"))
 
@@ -3389,8 +3436,8 @@ class Window(QMainWindow):
                 return
 
         fmt_items = [
-            "TXT (xyz.txt, M.txt, T.txt, P.txt, report.txt)",
-            "CSV (xyz.csv, M.csv, T.csv, P.csv, report.txt)"
+            "TXT (xyz.txt, xyz_for_export.txt, M.txt, T.txt, P.txt, report.txt)",
+            "CSV (xyz.csv, xyz_for_export.csv, M.csv, T.csv, P.csv, report.txt)"
         ]
         dlg = QDialog(self)
         dlg.setWindowTitle(self._tr("File Format", "Формат файлов"))
@@ -3421,6 +3468,12 @@ class Window(QMainWindow):
         files_saved = []
 
         try:
+            x_export, y_export = self.model.take_x_y_for_export()
+            xyz_for_export = np.column_stack([
+                np.asarray(x_export, dtype=float),
+                np.asarray(y_export, dtype=float),
+                np.zeros(len(x_export), dtype=float),
+            ])
             if choice.startswith("TXT"):
                 xyz = np.column_stack([
                     np.asarray(self.x_curve, dtype=float),
@@ -3432,6 +3485,11 @@ class Window(QMainWindow):
                     xyz, fmt="%.9g"  # The default delimiter is a space.
                 )
                 files_saved.append("xyz.txt")
+                np.savetxt(
+                    os.path.join(target_dir, "xyz_for_export.txt"),
+                    xyz_for_export, fmt="%.9g"
+                )
+                files_saved.append("xyz_for_export.txt")
 
                 if have_M:
                     np.savetxt(os.path.join(target_dir, "M.txt"),
@@ -3467,6 +3525,15 @@ class Window(QMainWindow):
                 )
 
                 files_saved.append("xyz.csv")
+                np.savetxt(
+                    os.path.join(target_dir, "xyz_for_export.csv"),
+                    xyz_for_export,
+                    fmt="%.9g",
+                    delimiter=";",
+                    header="x;y;z",
+                    comments=""
+                )
+                files_saved.append("xyz_for_export.csv")
 
                 if have_M:
                     np.savetxt(os.path.join(target_dir, "M.csv"),
@@ -3764,6 +3831,8 @@ class Window(QMainWindow):
             [inputs, self._tr("Sea-level thrust P_SL", "Тяга на уровне моря P_SL"), self.model.P_0, self._tr("N", "Н")],
             [inputs, self._tr("Vacuum thrust P_inf", "Тяга в вакууме P_inf"), self.model.P_8, self._tr("N", "Н")],
             [inputs, self._tr("Chamber pressure p_c", "Давление в камере сгорания p_c"), self.model.p_k, mpa],
+            [inputs, self._tr("Specific impulse coefficient J_coef", "Коэффициент удельного импульса J_coef"), self.model.coefJ, ""],
+            [inputs, self._tr("Number of combustion chambers N_c", "Число камер сгорания N_c"), self.model.z_k, ""],
             [inputs, self._tr("Chamber temperature T_c", "Температура продуктов в камере T_c"), self.model.T_k, kelvin],
             [inputs, self._tr("Nozzle exit pressure p_e", "Давление на срезе сопла p_e"), self.model.p_a, mpa],
             [inputs, self._tr("Selected-mode ambient pressure p_amb",
@@ -3947,9 +4016,8 @@ class Window(QMainWindow):
         p_k = self._v(self.ed_p_k)
         thrust_source, thrust_value = self._current_thrust_input()
         P_calc = thrust_value
-        coefJ = COEF_J_DEFAULT
-        z_k = 1.0
-        self.ed_z_k.setText("1")
+        coefJ = self._v(self.ed_coefJ)
+        z_k = self._v(self.ed_z_k)
 
         T_k = self._v(self.ed_T_k);
         p_e = self._v(self.ed_p_a)
@@ -3958,7 +4026,7 @@ class Window(QMainWindow):
         Jr = self._v(self.ed_Jr);
         J0 = self._v(self.ed_J0)
 
-        if not all(v is not None for v in (p_k, thrust_value, z_k)):
+        if not all(v is not None for v in (p_k, thrust_value, coefJ, z_k)):
             return
 
         if self._auto_allowed("T_k"):
@@ -3990,7 +4058,8 @@ class Window(QMainWindow):
             self._set_if_diff(self.ed_J0, J0)
 
         if (None in (T_k, p_e, p_h)
-                or p_k <= m.p_0 or p_e <= 0 or p_e >= p_k or z_k <= 0):
+                or p_k <= m.p_0 or p_e <= 0 or p_e >= p_k
+                or not 0 < coefJ <= 1 or z_k <= 0):
             return
         try:
             P_calc = self._resolve_design_thrust(p_k, thrust_value, thrust_source, coefJ, z_k, T_k, p_e, p_h)

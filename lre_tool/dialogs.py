@@ -246,6 +246,9 @@ def open_fuel_parameters_dialog(window):
 
         window.on_change()
         window.timer.start()
+        inverse_dialog = getattr(window, "_inverse_dialog", None)
+        if inverse_dialog is not None:
+            inverse_dialog.refresh_fuel_names()
 
     def edit_fuel_name():
         window.ed_fuel_name.setFocus()
@@ -280,6 +283,9 @@ def open_fuel_parameters_dialog(window):
 
         window.on_change()
         window.timer.start()
+        inverse_dialog = getattr(window, "_inverse_dialog", None)
+        if inverse_dialog is not None:
+            inverse_dialog.refresh_fuel_names()
 
     window.list_fuels.currentRowChanged.connect(load_fuel_from_list)
     window.btn_save_fuel_params.clicked.connect(save_current_fuel)
