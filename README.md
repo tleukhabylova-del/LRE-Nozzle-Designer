@@ -18,6 +18,8 @@ Copyright © 2026 Joint-Stock Company “National Center of Space Research and T
 
 - propellant-pair selection;
 - engine and nozzle-geometry calculations;
+- performance analysis of an existing nozzle from its throat and exit diameters;
+- thrust-versus-altitude plots for both the main calculation and existing-nozzle analysis;
 - nozzle geometry, pressure, temperature, and Mach-number plots;
 - combustion-chamber and nozzle-wall thermal-load calculations;
 - export of results to text, CSV, and Excel files;
@@ -109,6 +111,20 @@ release.
 ```powershell
 python main.py
 ```
+
+## Calculation checks
+
+Run the calculation and interface checks from the project directory:
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+The altitude chart covers 0–100 km and uses atmospheric pressure scaled to the
+application's sea-level reference of 0.0981 MPa. It assumes fixed nozzle geometry
+and chamber conditions; flow separation and side loads are outside this model.
+The checks and their scope are described in
+[the thrust-versus-altitude validation note](docs/VALIDATION_THRUST_ALTITUDE_RU.md).
 
 ## Project structure
 

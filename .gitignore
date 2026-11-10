@@ -43,3 +43,11 @@ Desktop.ini
 
 # Generated application results
 LRE_results_*/
+
+# Local authoring, analysis, and temporary workspaces
+/report_output/
+/output/
+/tmp/
+/.chart-data-*/
+/.codex-finalizer/
+/.codex*_build/

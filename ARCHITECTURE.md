@@ -15,6 +15,9 @@ The application is being separated into small, verifiable modules. Structural re
 - `lre_tool/styles.py` — light and dark theme palettes and style sheets.
 - `lre_tool/dialogs.py` — propellant-pair viewing and editing dialog.
 - `lre_tool/validators.py` — numeric input with either a decimal point or comma.
+- `lre_tool/inverse.py` — existing-nozzle performance calculations and shared thrust-versus-altitude data.
+- `lre_tool/inverse_dialog.py` — existing-nozzle analysis dialog.
+- `lre_tool/altitude_dialog.py` — the shared altitude chart for main and existing-nozzle calculations.
 
 ## Refactoring rules
 

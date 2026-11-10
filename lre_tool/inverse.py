@@ -29,6 +29,160 @@ class InverseResult:
     iterations: int
 
 
+@dataclass(frozen=True)
+class AltitudeThrustCurve:
+    altitude_km: tuple
+    ambient_pressure_mpa: tuple
+    specific_impulse: tuple
+    thrust: tuple
+    matched_altitude_km: float | None
+
+
+@dataclass(frozen=True)
+class AltitudePerformance:
+    total_mass_flow: float
+    chamber_count: int
+    p_a: float
+    J_r_ud: float
+    J_vac: float
+    P_SL: float
+    P_vac: float
+
+
+def altitude_performance_from_model(model):
+    """Adapt a completed forward-calculation model for the shared altitude chart."""
+    values = (
+        model.m_, model.z_k, model.p_a, model.J_r_ud,
+        model.J_8_ud, model.P_0, model.P_8,
+    )
+    if any(value is None or not math.isfinite(float(value)) for value in values):
+        raise ValueError("engine calculation results are incomplete")
+    if model.m_ <= 0 or model.z_k <= 0 or model.p_a <= 0:
+        raise ValueError("engine calculation results are outside the method domain")
+    return AltitudePerformance(
+        total_mass_flow=float(model.m_ * model.z_k),
+        chamber_count=int(model.z_k),
+        p_a=float(model.p_a),
+        J_r_ud=float(model.J_r_ud),
+        J_vac=float(model.J_8_ud),
+        P_SL=float(model.P_0),
+        P_vac=float(model.P_8),
+    )
+
+
+_ATMOSPHERE_BASE_ALTITUDES_KM = (0.0, 11.0, 20.0, 32.0, 47.0, 51.0, 71.0, 84.852)
+_ATMOSPHERE_LAPSE_RATES_K_PER_KM = (-6.5, 0.0, 1.0, 2.8, 0.0, -2.8, -2.0)
+_ATMOSPHERE_T0_K = 288.15
+_ATMOSPHERE_STANDARD_P0_PA = 101325.0
+_ATMOSPHERE_G0 = 9.80665
+_ATMOSPHERE_R_AIR = 287.05287
+_EARTH_RADIUS_KM = 6356.766
+
+
+def _atmosphere_layer_bases():
+    temperatures = [_ATMOSPHERE_T0_K]
+    pressure_ratios = [1.0]
+    for index, lapse_rate in enumerate(_ATMOSPHERE_LAPSE_RATES_K_PER_KM):
+        h0 = _ATMOSPHERE_BASE_ALTITUDES_KM[index]
+        h1 = _ATMOSPHERE_BASE_ALTITUDES_KM[index + 1]
+        temperature0 = temperatures[-1]
+        delta_h_m = (h1 - h0) * 1000.0
+        if lapse_rate == 0.0:
+            ratio = math.exp(
+                -_ATMOSPHERE_G0 * delta_h_m
+                / (_ATMOSPHERE_R_AIR * temperature0)
+            )
+            temperature1 = temperature0
+        else:
+            lapse_rate_per_m = lapse_rate / 1000.0
+            temperature1 = temperature0 + lapse_rate * (h1 - h0)
+            ratio = (temperature0 / temperature1) ** (
+                _ATMOSPHERE_G0 / (_ATMOSPHERE_R_AIR * lapse_rate_per_m)
+            )
+        temperatures.append(temperature1)
+        pressure_ratios.append(pressure_ratios[-1] * ratio)
+    return tuple(temperatures), tuple(pressure_ratios)
+
+
+_ATMOSPHERE_BASE_TEMPERATURES_K, _ATMOSPHERE_BASE_PRESSURE_RATIOS = (
+    _atmosphere_layer_bases()
+)
+
+
+def standard_atmosphere_pressure_mpa(altitude_km):
+    """Return ambient pressure, scaled to the application's 0.0981 MPa sea level."""
+    altitude_km = float(altitude_km)
+    if not math.isfinite(altitude_km) or altitude_km < 0:
+        raise ValueError("altitude must be a non-negative finite number")
+
+    geopotential_km = (
+        _EARTH_RADIUS_KM * altitude_km / (_EARTH_RADIUS_KM + altitude_km)
+    )
+    layer = len(_ATMOSPHERE_LAPSE_RATES_K_PER_KM) - 1
+    for index in range(len(_ATMOSPHERE_LAPSE_RATES_K_PER_KM)):
+        if geopotential_km < _ATMOSPHERE_BASE_ALTITUDES_KM[index + 1]:
+            layer = index
+            break
+
+    h0 = _ATMOSPHERE_BASE_ALTITUDES_KM[layer]
+    temperature0 = _ATMOSPHERE_BASE_TEMPERATURES_K[layer]
+    pressure_ratio0 = _ATMOSPHERE_BASE_PRESSURE_RATIOS[layer]
+    lapse_rate = _ATMOSPHERE_LAPSE_RATES_K_PER_KM[layer]
+    delta_h_m = (geopotential_km - h0) * 1000.0
+    if lapse_rate == 0.0:
+        pressure_ratio = pressure_ratio0 * math.exp(
+            -_ATMOSPHERE_G0 * delta_h_m
+            / (_ATMOSPHERE_R_AIR * temperature0)
+        )
+    else:
+        lapse_rate_per_m = lapse_rate / 1000.0
+        temperature = temperature0 + lapse_rate * (geopotential_km - h0)
+        pressure_ratio = pressure_ratio0 * (temperature0 / temperature) ** (
+            _ATMOSPHERE_G0 / (_ATMOSPHERE_R_AIR * lapse_rate_per_m)
+        )
+    return SEA_LEVEL_PRESSURE_MPA * pressure_ratio
+
+
+def calculate_altitude_thrust_curve(result, max_altitude_km=100.0, step_km=0.5):
+    """Calculate total thrust versus altitude for a completed inverse calculation."""
+    max_altitude_km = float(max_altitude_km)
+    step_km = float(step_km)
+    if not math.isfinite(max_altitude_km) or max_altitude_km <= 0:
+        raise ValueError("maximum altitude must be positive")
+    if not math.isfinite(step_km) or step_km <= 0:
+        raise ValueError("altitude step must be positive")
+
+    point_count = int(math.ceil(max_altitude_km / step_km))
+    altitudes = [min(index * step_km, max_altitude_km) for index in range(point_count + 1)]
+    if altitudes[-1] != max_altitude_km:
+        altitudes.append(max_altitude_km)
+    pressures = [standard_atmosphere_pressure_mpa(value) for value in altitudes]
+    delta_j = result.J_vac - result.J_r_ud
+    impulses = [
+        result.J_vac - delta_j * pressure / result.p_a
+        for pressure in pressures
+    ]
+    thrusts = [result.total_mass_flow * impulse for impulse in impulses]
+
+    matched_altitude = None
+    if pressures[-1] <= result.p_a <= pressures[0]:
+        for index in range(1, len(pressures)):
+            if pressures[index] <= result.p_a <= pressures[index - 1]:
+                p0, p1 = pressures[index - 1], pressures[index]
+                h0, h1 = altitudes[index - 1], altitudes[index]
+                fraction = (result.p_a - p0) / (p1 - p0)
+                matched_altitude = h0 + fraction * (h1 - h0)
+                break
+
+    return AltitudeThrustCurve(
+        altitude_km=tuple(altitudes),
+        ambient_pressure_mpa=tuple(pressures),
+        specific_impulse=tuple(impulses),
+        thrust=tuple(thrusts),
+        matched_altitude_km=matched_altitude,
+    )
+
+
 def solve_exit_pressure_ratio(fa, k, tolerance=1e-12, max_iterations=100):
     """Solve the area-ratio equation on its supersonic branch by Newton's method."""
     if not math.isfinite(fa) or fa <= 1:

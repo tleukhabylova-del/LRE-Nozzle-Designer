@@ -39,6 +39,8 @@ from lre_tool.constants import (
     PARA_DEFAULT, PARA_RU, R_st_list, T_st_list, k_m_list, k_st_list,
 )
 from lre_tool.dialogs import open_fuel_parameters_dialog
+from lre_tool.altitude_dialog import AltitudeThrustDialog
+from lre_tool.inverse import altitude_performance_from_model
 from lre_tool.inverse_dialog import open_inverse_nozzle_dialog
 from lre_tool.mach import MWorker
 from lre_tool.model import GeometryState, Model
@@ -454,6 +456,13 @@ class Window(QMainWindow):
         self.btn_inverse_calc.setMinimumHeight(32)
         self.btn_inverse_calc.setMinimumWidth(FIELD_W)
 
+        self.btn_altitude_plot = QPushButton("Thrust vs Altitude")
+        self.btn_altitude_plot.clicked.connect(self.open_main_altitude_plot)
+        self.btn_altitude_plot.setMinimumHeight(32)
+        self.btn_altitude_plot.setMinimumWidth(FIELD_W)
+        self.btn_altitude_plot.setEnabled(False)
+        self._altitude_dialog = None
+
         # --- Scroll area containing only inputsWidget ---
         scroll_inputs = QScrollArea()
         scroll_inputs.setWidgetResizable(True)
@@ -479,6 +488,7 @@ class Window(QMainWindow):
         calculation_buttons.addWidget(self.btn_inverse_calc)
         calculation_buttons.addWidget(self.btn_calc_params)
         vLeftColumn.addLayout(calculation_buttons)
+        vLeftColumn.addWidget(self.btn_altitude_plot, 0, Qt.AlignRight)
 
         # ===== Manual-override tracking and signal connections =====
         self._auto_fields = {
@@ -880,6 +890,9 @@ class Window(QMainWindow):
                 ))
 
         self.page_geom.btn_calc.setEnabled(True)
+        self.btn_altitude_plot.setEnabled(False)
+        if self._altitude_dialog is not None:
+            self._altitude_dialog.close()
         self.page_M.btn_calc.setEnabled(False)
         self.page_T.btn_calc.setEnabled(False)
         self.page_P.btn_calc.setEnabled(False)
@@ -984,6 +997,10 @@ class Window(QMainWindow):
             "Nozzle Analysis",
             "Анализ готового сопла",
         ))
+        self.btn_altitude_plot.setText(tr(
+            "Thrust vs Altitude",
+            "График тяги по высоте",
+        ))
 
         self.page_geom.plot.title = tr("Nozzle geometry", "Геометрия сопла")
         self.page_geom.btn_calc.setText(tr("Show drawing", "Вывести чертеж"))
@@ -1030,6 +1047,8 @@ class Window(QMainWindow):
         inverse_dialog = getattr(self, "_inverse_dialog", None)
         if inverse_dialog is not None:
             inverse_dialog.retranslate_ui()
+        if self._altitude_dialog is not None:
+            self._altitude_dialog.retranslate_ui()
 
         if self._last_report_args is not None:
             self._fill_params_text(*self._last_report_args)
@@ -1089,6 +1108,27 @@ class Window(QMainWindow):
 
     def open_inverse_nozzle_dialog(self):
         open_inverse_nozzle_dialog(self)
+
+    def open_main_altitude_plot(self):
+        try:
+            result = altitude_performance_from_model(self.model)
+        except ValueError:
+            QMessageBox.information(
+                self,
+                self._tr("No data", "Нет данных"),
+                self._tr(
+                    "Calculate the engine and nozzle first.",
+                    "Сначала рассчитайте двигатель и сопло.",
+                ),
+            )
+            return
+        if self._altitude_dialog is None:
+            self._altitude_dialog = AltitudeThrustDialog(self, result)
+        else:
+            self._altitude_dialog.update_result(result)
+        self._altitude_dialog.show()
+        self._altitude_dialog.raise_()
+        self._altitude_dialog.activateWindow()
 
 
     def eventFilter(self, obj, event):
@@ -1365,6 +1405,12 @@ class Window(QMainWindow):
 
         for pw in plots:
             pw.set_theme(mode)
+
+        inverse_dialog = getattr(self, "_inverse_dialog", None)
+        if inverse_dialog is not None:
+            inverse_dialog.set_theme(mode)
+        if self._altitude_dialog is not None:
+            self._altitude_dialog.set_theme(mode)
 
         try:
             if getattr(self, "x_curve", None) is not None and getattr(self, "y_curve", None) is not None:
@@ -1942,6 +1988,7 @@ class Window(QMainWindow):
             return
 
         self.page_geom.btn_calc.setEnabled(True)
+        self.btn_altitude_plot.setEnabled(True)
         self.M = None;
         self.T = None;
         self.P = None
@@ -4001,6 +4048,7 @@ class Window(QMainWindow):
 
     def recompute(self):
         # Update dependent fields after a valid input value changes.
+        self.btn_altitude_plot.setEnabled(False)
         m = self.model
         k_m = self._v(self.ed_k_m);
         R = self._v(self.ed_R);
@@ -4075,6 +4123,7 @@ class Window(QMainWindow):
             m.J_0_ud = J0
             m.P_0 = m.m_ * z_k * m.J_0_ud
             self._set_if_diff(self.ed_P_0, m.P_0)
+        self.btn_altitude_plot.setEnabled(True)
         self._update_nozzle_status()
 
 

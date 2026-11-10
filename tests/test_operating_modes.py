@@ -140,6 +140,23 @@ class WindowOperatingModeTests(unittest.TestCase):
 
         self.assertEqual(self.window.model.coefJ, 0.938)
 
+    def test_forward_calculation_enables_altitude_plot(self):
+        self.assertFalse(self.window.btn_altitude_plot.isEnabled())
+        self.window.cb_calc_mode.setCurrentIndex(1)
+        self.window.ed_p_k.setText("1")
+        self.window.ed_p_a.setText("0.01")
+        self.window.ed_P_8.setText("500")
+        self.window._thrust_source = "P_8"
+
+        self.window.recompute()
+        self.assertTrue(self.window.btn_altitude_plot.isEnabled())
+
+        self.window.open_main_altitude_plot()
+        self.app.processEvents()
+        self.assertIsNotNone(self.window._altitude_dialog)
+        self.assertTrue(self.window._altitude_dialog.isVisible())
+        self.window._altitude_dialog.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,7 +7,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt5.QtWidgets import QApplication, QListView
 
 from lre_tool.constants import COEF_J_DEFAULT
-from lre_tool.inverse import calculate_inverse_nozzle, solve_exit_pressure_ratio
+from lre_tool.inverse import (
+    SEA_LEVEL_PRESSURE_MPA,
+    altitude_performance_from_model,
+    calculate_altitude_thrust_curve,
+    calculate_inverse_nozzle,
+    solve_exit_pressure_ratio,
+    standard_atmosphere_pressure_mpa,
+)
 from lre_tool.inverse_dialog import InverseNozzleDialog
 from lre_tool.model import Model
 from main import Window
@@ -81,6 +88,35 @@ class InverseNozzleTests(unittest.TestCase):
                 21, 70, 10, 3631, 324, 1.11, 3034, coefJ=1.01,
             )
 
+    def test_standard_atmosphere_pressure_decreases_to_near_vacuum(self):
+        pressures = [standard_atmosphere_pressure_mpa(h) for h in (0, 10, 50, 100)]
+        self.assertTrue(math.isclose(pressures[0], SEA_LEVEL_PRESSURE_MPA))
+        self.assertTrue(all(left > right for left, right in zip(pressures, pressures[1:])))
+        self.assertLess(pressures[-1], 1e-6)
+
+    def test_altitude_curve_matches_sea_level_and_approaches_vacuum(self):
+        result = calculate_inverse_nozzle(21, 70, 10, 3631, 324, 1.11, 3034)
+        curve = calculate_altitude_thrust_curve(result)
+        self.assertTrue(math.isclose(curve.thrust[0], result.P_SL, rel_tol=1e-12))
+        self.assertTrue(math.isclose(curve.thrust[-1], result.P_vac, rel_tol=1e-5))
+        self.assertTrue(all(
+            left <= right for left, right in zip(curve.thrust, curve.thrust[1:])
+        ))
+
+    def test_forward_model_can_use_shared_altitude_curve(self):
+        model = Model()
+        model.set_fuel(1)
+        p_k = 1.0
+        model.compute_geometry(
+            p_k, 500.0, COEF_J_DEFAULT, 2.0, model.auto_Tk(p_k), 0.01,
+            calc_mode="vacuum",
+        )
+        performance = altitude_performance_from_model(model)
+        curve = calculate_altitude_thrust_curve(performance)
+        self.assertEqual(performance.chamber_count, 2)
+        self.assertTrue(math.isclose(curve.thrust[0], model.P_0, rel_tol=1e-12))
+        self.assertTrue(math.isclose(performance.P_vac, model.P_8, rel_tol=1e-12))
+
 
 class InverseNozzleDialogTests(unittest.TestCase):
     @classmethod
@@ -94,6 +130,21 @@ class InverseNozzleDialogTests(unittest.TestCase):
         self.assertIn("T_k", dialog.results.toPlainText())
         self.assertIn("m_dot,sum", dialog.results.toPlainText())
         self.assertIn("P_vac,sum", dialog.results.toPlainText())
+        self.assertTrue(dialog.btn_altitude_plot.isEnabled())
+        dialog.close()
+        window.close()
+
+    def test_altitude_plot_requires_and_uses_latest_result(self):
+        window = Window()
+        dialog = InverseNozzleDialog(window)
+        self.assertFalse(dialog.btn_altitude_plot.isEnabled())
+        dialog.calculate()
+        dialog.open_altitude_plot()
+        self.app.processEvents()
+        self.assertIsNotNone(dialog._altitude_dialog)
+        self.assertTrue(dialog._altitude_dialog.isVisible())
+        self.assertEqual(dialog._altitude_dialog.result, dialog.last_result)
+        dialog._altitude_dialog.close()
         dialog.close()
         window.close()
 
@@ -119,6 +170,7 @@ class InverseNozzleDialogTests(unittest.TestCase):
         dialog.calculate()
         window._toggle_language()
         self.assertEqual(dialog.btn_calculate.text(), "Рассчитать")
+        self.assertEqual(dialog.btn_altitude_plot.text(), "График тяги по высоте")
         self.assertEqual(window.btn_inverse_calc.text(), "Анализ готового сопла")
         self.assertEqual(dialog.lbl_fuel.text(), "Топливная пара")
         self.assertEqual(dialog.windowTitle(), "Расчет характеристик двигателя по геометрии сопла")

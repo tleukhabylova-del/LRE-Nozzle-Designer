@@ -8,6 +8,7 @@ from PyQt5.QtWidgets import (
 )
 
 from .constants import COEF_J_DEFAULT, J_st_list, R_st_list, T_st_list, k_st_list
+from .altitude_dialog import AltitudeThrustDialog
 from .inverse import calculate_inverse_nozzle
 from .validators import FlexibleDoubleValidator
 
@@ -16,6 +17,8 @@ class InverseNozzleDialog(QDialog):
     def __init__(self, window):
         super().__init__(window)
         self.window = window
+        self.last_result = None
+        self._altitude_dialog = None
         self.setModal(False)
         self.setMinimumWidth(620)
 
@@ -74,12 +77,17 @@ class InverseNozzleDialog(QDialog):
         buttons = QHBoxLayout()
         buttons.addStretch(1)
         self.btn_calculate = QPushButton()
+        self.btn_altitude_plot = QPushButton()
         self.btn_close = QPushButton()
         self.btn_calculate.setMinimumWidth(120)
+        self.btn_altitude_plot.setMinimumWidth(170)
+        self.btn_altitude_plot.setEnabled(False)
         self.btn_close.setMinimumWidth(100)
         self.btn_calculate.clicked.connect(self.calculate)
+        self.btn_altitude_plot.clicked.connect(self.open_altitude_plot)
         self.btn_close.clicked.connect(self.close)
         buttons.addWidget(self.btn_calculate)
+        buttons.addWidget(self.btn_altitude_plot)
         buttons.addWidget(self.btn_close)
         root.addLayout(buttons)
 
@@ -142,7 +150,14 @@ class InverseNozzleDialog(QDialog):
         self.refresh_fuel_names()
 
         self.btn_calculate.setText(tr("Calculate", "Рассчитать"))
+        self.btn_altitude_plot.setText(tr(
+            "Thrust vs Altitude",
+            "График тяги по высоте",
+        ))
         self.btn_close.setText(tr("Close", "Закрыть"))
+
+        if self._altitude_dialog is not None:
+            self._altitude_dialog.retranslate_ui()
 
         # Rebuild language-dependent result and warning text, if already calculated.
         if self.results.toPlainText():
@@ -274,6 +289,25 @@ class InverseNozzleDialog(QDialog):
             ),
         ]
         self.results.setPlainText("\n".join(lines))
+        self.last_result = result
+        self.btn_altitude_plot.setEnabled(True)
+        if self._altitude_dialog is not None:
+            self._altitude_dialog.update_result(result)
+
+    def open_altitude_plot(self):
+        if self.last_result is None:
+            return
+        if self._altitude_dialog is None:
+            self._altitude_dialog = AltitudeThrustDialog(self, self.last_result)
+        else:
+            self._altitude_dialog.update_result(self.last_result)
+        self._altitude_dialog.show()
+        self._altitude_dialog.raise_()
+        self._altitude_dialog.activateWindow()
+
+    def set_theme(self, mode):
+        if self._altitude_dialog is not None:
+            self._altitude_dialog.set_theme(mode)
 
 
 def open_inverse_nozzle_dialog(window):
