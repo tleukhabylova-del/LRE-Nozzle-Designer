@@ -58,7 +58,7 @@ from lre_tool.styles import apply_window_palette
 from lre_tool.validators import FlexibleDoubleValidator
 
 
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.1.2"
 VERSION_YEAR = "2026"
 
 

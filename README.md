@@ -83,7 +83,14 @@ applicable licenses and source-material terms. Exact third-party notices
 should be generated for the dependency versions included in each binary
 release.
 
-## Installation
+## Windows executable
+
+Download the Windows executable from the
+[latest release](https://github.com/tleukhabylova-del/LRE-Nozzle-Designer/releases/latest)
+and run it directly. Python does not need to be installed for the executable.
+Each release includes a SHA-256 checksum for the download.
+
+## Installation from source
 
 1. Download or clone the repository.
 2. Open PowerShell in the project directory.
